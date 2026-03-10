@@ -4,13 +4,15 @@ Maps Whisper transcript segments → slide pages using dense RAG.
 
 Pipeline:
   1. Extract text from each slide (PDF / PPTX / DOCX)
+     - Includes speaker notes (PPTX) and image descriptions (OCR + Claude vision)
   2. Embed slides with sentence-transformers (all-mpnet-base-v2, GPU)
   3. Build a FAISS index for fast cosine-similarity lookup
   4. For each transcript segment query the index (optionally with a context
      window of ±CONTEXT_SEC seconds for richer matching signal)
   5. Apply Viterbi temporal smoothing so slides only advance forward
-  6. Collapse consecutive equal-slide segments into a compact timeline
-  7. Save JSON to [course_id]/alignment/[stem].json
+  6. Flag segments that don't match any slide well (off_slide)
+  7. Collapse consecutive equal-slide segments into a compact timeline
+  8. Save JSON to [course_id]/alignment/[stem].json
 
 Usage:
   # align one caption↔slide pair
@@ -25,6 +27,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 from pathlib import Path
@@ -54,41 +57,275 @@ BWD_LOGP_PER  = -1.5    # cost per slide stepped backward
 # PRIOR_SIGMA controls the width in slide units; larger = softer guide.
 PRIOR_SIGMA   = 8.0
 
+# Off-slide detection: segments where the best raw cosine similarity (before
+# the position prior) is below this threshold are flagged as off_slide.
+OFF_SLIDE_THRESHOLD = 0.28
+
+# Image captioning: pages / slides with fewer than this many words of text
+# have their visual content described via OCR + Claude vision.
+IMAGE_WORD_THRESHOLD = 20
+
+# OpenAI vision model used for slide image description.
+# gpt-4o-mini is used for cost efficiency; each call is only made once per
+# slide because results are cached in {slide_file}.image_cache.json.
+OPENAI_VISION_MODEL = "gpt-4o-mini"
+
+# Sparse-slide enrichment: slides below this word count borrow text from
+# content-rich neighbours before embedding.
+SPARSE_THRESHOLD = 30   # words
+NEIGHBOR_WORDS   = 60   # how many words to borrow from each neighbour
+
+
+# ── OpenAI API key helper ─────────────────────────────────────────────────────
+
+def _get_openai_key() -> str:
+    import os
+    key = os.environ.get("OPENAI_API_KEY", "")
+    if not key:
+        key_file = PROJECT_DIR / "openai_api.txt"
+        if key_file.exists():
+            key = key_file.read_text().strip()
+    return key
+
+
+# ── Image description (OCR + Claude vision) ───────────────────────────────────
+
+_VISION_PROMPT = (
+    "This is a slide from a university lecture. "
+    "Describe ALL visible content in detail: every text label, concept name, "
+    "diagram element, arrow, relationship, numbered step, code snippet, and "
+    "technical term you can see. "
+    "Focus on the academic topic — mention state names, algorithm steps, "
+    "data structure relationships, or any specific terminology shown. "
+    "Write a thorough plain-text description (no markdown), 3-5 sentences."
+)
+
+
+class ImageDescriber:
+    """
+    Extracts textual descriptions from slide images using:
+      1. pytesseract OCR  — free, captures printed text in diagrams
+      2. Claude vision API — powerful, understands academic diagrams and
+                             technical content (used only on slides with
+                             < IMAGE_WORD_THRESHOLD words; results cached)
+
+    The Claude API is called at most once per slide per slide file, thanks to
+    the image cache written to {slide_file}.image_cache.json.
+    """
+
+    def __init__(self):
+        self._ocr_ok    = None   # None = unchecked, True/False after first call
+        self._openai    = None   # openai.OpenAI client, lazy-loaded
+        self._api_calls = 0      # count for cost reporting
+
+    # ── lazy loaders ─────────────────────────────────────────────────────────
+
+    def _ensure_ocr(self) -> bool:
+        if self._ocr_ok is None:
+            try:
+                import pytesseract
+                pytesseract.get_tesseract_version()
+                self._ocr_ok = True
+            except Exception:
+                print("  [img] pytesseract not available — OCR skipped")
+                self._ocr_ok = False
+        return self._ocr_ok
+
+    def _ensure_openai(self) -> bool:
+        if self._openai is not None:
+            return True
+        key = _get_openai_key()
+        if not key:
+            print("  [img] No OpenAI API key — vision description skipped")
+            return False
+        try:
+            from openai import OpenAI
+            self._openai = OpenAI(api_key=key)
+            return True
+        except Exception as e:
+            print(f"  [img] OpenAI client error: {e}")
+            return False
+
+    # ── per-image methods ────────────────────────────────────────────────────
+
+    def _ocr(self, img) -> str:
+        if not self._ensure_ocr():
+            return ""
+        try:
+            import pytesseract
+            return pytesseract.image_to_string(img).strip()
+        except Exception:
+            return ""
+
+    def _openai_describe(self, img) -> str:
+        """Send one slide image to GPT-4o-mini vision and return description."""
+        if not self._ensure_openai():
+            return ""
+        import base64
+        try:
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            b64 = base64.standard_b64encode(buf.getvalue()).decode()
+
+            resp = self._openai.chat.completions.create(
+                model=OPENAI_VISION_MODEL,
+                max_tokens=300,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url",
+                         "image_url": {"url": f"data:image/png;base64,{b64}",
+                                       "detail": "low"}},   # "low" = cheapest
+                        {"type": "text", "text": _VISION_PROMPT},
+                    ],
+                }],
+            )
+            self._api_calls += 1
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"  [img] OpenAI vision error: {e}")
+            return ""
+
+    # ── public API ───────────────────────────────────────────────────────────
+
+    def describe_slide_image(self, img) -> str:
+        """
+        Run OCR then Claude vision on a single slide image (already rendered
+        as a full-page pixmap).  Returns combined description text.
+        The caller is responsible for caching so this is never called twice
+        for the same slide.
+        """
+        from PIL import Image as PILImage
+        if not isinstance(img, PILImage.Image):
+            return ""
+        parts: list[str] = []
+        ocr = self._ocr(img)
+        if ocr:
+            parts.append(ocr)
+        vision = self._openai_describe(img)
+        if vision:
+            parts.append(vision)
+        return " ".join(parts)
+
+    @property
+    def api_calls(self) -> int:
+        return self._api_calls
+
+
+# ── Image cache helpers ────────────────────────────────────────────────────────
+
+def _load_image_cache(slide_path: Path) -> dict:
+    cache_file = slide_path.parent / f"{slide_path.name}.image_cache.json"
+    if cache_file.exists():
+        with open(cache_file) as f:
+            return json.load(f)
+    return {}
+
+
+def _save_image_cache(slide_path: Path, cache: dict) -> None:
+    cache_file = slide_path.parent / f"{slide_path.name}.image_cache.json"
+    with open(cache_file, "w") as f:
+        json.dump(cache, f, indent=2)
+
 
 # ── Slide text extraction ─────────────────────────────────────────────────────
 
 class SlideText(NamedTuple):
     index: int          # 0-based slide/page index
     label: str          # short title (first non-empty line)
-    text:  str          # full extracted text
+    text:  str          # full extracted text (incl. notes + image descriptions)
 
 
-def extract_pdf(path: Path) -> list[SlideText]:
+def extract_pdf(path: Path,
+                describer: ImageDescriber | None = None,
+                img_cache: dict | None = None) -> list[SlideText]:
     import fitz
-    doc   = fitz.open(str(path))
+    from PIL import Image as PILImage
+
+    doc    = fitz.open(str(path))
     slides = []
     for i, page in enumerate(doc):
         text  = page.get_text().strip()
-        label = next((ln.strip() for ln in text.splitlines() if ln.strip()), f"Page {i+1}")
+        label = next((ln.strip() for ln in text.splitlines() if ln.strip()),
+                     f"Page {i+1}")
+
+        # Image enrichment for sparse pages — render the full page as a
+        # high-res pixmap so vector diagrams (state graphs, flowcharts, etc.)
+        # are captured alongside any embedded bitmaps.
+        if describer is not None and len(text.split()) < IMAGE_WORD_THRESHOLD:
+            cache_key = f"page_{i}"
+            if img_cache is not None and cache_key in img_cache:
+                img_desc = img_cache[cache_key]
+            else:
+                pxmap = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                pil   = PILImage.frombytes(
+                    "RGB", [pxmap.width, pxmap.height], pxmap.samples)
+                img_desc = describer.describe_slide_image(pil)
+                if img_cache is not None:
+                    img_cache[cache_key] = img_desc
+
+            if img_desc:
+                text = (text + "\n" + img_desc).strip()
+
         slides.append(SlideText(i, label[:80], text))
     doc.close()
     return slides
 
 
-def extract_pptx(path: Path) -> list[SlideText]:
+def extract_pptx(path: Path,
+                 describer: ImageDescriber | None = None,
+                 img_cache: dict | None = None) -> list[SlideText]:
     from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from PIL import Image as PILImage
+
     prs    = Presentation(str(path))
     slides = []
     for i, slide in enumerate(prs.slides):
-        parts = []
+        parts: list[str] = []
+
+        # Shape text
         for shape in slide.shapes:
             if shape.has_text_frame:
                 for para in shape.text_frame.paragraphs:
                     line = para.text.strip()
                     if line:
                         parts.append(line)
+
+        # Speaker notes
+        try:
+            notes_text = slide.notes_slide.notes_text_frame.text.strip()
+            if notes_text:
+                parts.append(notes_text)
+        except Exception:
+            pass
+
         text  = "\n".join(parts)
         label = parts[0][:80] if parts else f"Slide {i+1}"
+
+        # Image enrichment for sparse slides: use the first picture shape.
+        # For PPTX we extract the embedded image blob directly (no rendering).
+        if describer is not None and len(text.split()) < IMAGE_WORD_THRESHOLD:
+            cache_key = f"slide_{i}"
+            if img_cache is not None and cache_key in img_cache:
+                img_desc = img_cache[cache_key]
+            else:
+                img_desc = ""
+                for shape in slide.shapes:
+                    if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                        try:
+                            pil = PILImage.open(
+                                io.BytesIO(shape.image.blob)).convert("RGB")
+                            img_desc = describer.describe_slide_image(pil)
+                            break   # one image per slide is enough
+                        except Exception:
+                            pass
+                if img_cache is not None:
+                    img_cache[cache_key] = img_desc
+
+            if img_desc:
+                text = (text + "\n" + img_desc).strip()
+
         slides.append(SlideText(i, label, text))
     return slides
 
@@ -111,12 +348,14 @@ def extract_docx(path: Path) -> list[SlideText]:
     return pages
 
 
-def load_slides(path: Path) -> list[SlideText]:
+def load_slides(path: Path,
+                describer: ImageDescriber | None = None,
+                img_cache: dict | None = None) -> list[SlideText]:
     ext = path.suffix.lower()
     if ext == ".pdf":
-        return extract_pdf(path)
+        return extract_pdf(path, describer, img_cache)
     if ext in (".pptx", ".ppt"):
-        return extract_pptx(path)
+        return extract_pptx(path, describer, img_cache)
     if ext in (".docx", ".doc"):
         return extract_docx(path)
     raise ValueError(f"Unsupported slide format: {ext}")
@@ -263,22 +502,45 @@ def viterbi_smooth_fast(log_likelihoods: np.ndarray) -> list[int]:
 # ── Timeline collapse ─────────────────────────────────────────────────────────
 
 def build_timeline(segments: list[dict], slide_path: list[int],
-                   slides: list[SlideText]) -> list[dict]:
+                   slides: list[SlideText],
+                   off_slide_mask: list[bool] | None = None) -> list[dict]:
     """
     Merge consecutive segments assigned to the same slide into one interval.
+    Off-slide segments are excluded from the timeline.
     Returns list of {slide_1based, start, end, label}.
     """
     if not segments:
         return []
 
-    timeline: list[dict] = []
-    cur_slide = slide_path[0]
-    cur_start = segments[0]["start"]
-    cur_end   = segments[0]["end"]
+    if off_slide_mask is None:
+        off_slide_mask = [False] * len(segments)
 
-    for i in range(1, len(segments)):
-        s = segments[i]
-        if slide_path[i] == cur_slide:
+    timeline: list[dict] = []
+    cur_slide: int | None = None
+    cur_start = 0.0
+    cur_end   = 0.0
+
+    for i in range(len(segments)):
+        s  = segments[i]
+        si = slide_path[i]
+
+        if off_slide_mask[i]:
+            # Flush current span before the gap
+            if cur_slide is not None:
+                timeline.append({
+                    "slide":  cur_slide + 1,
+                    "start":  round(cur_start, 3),
+                    "end":    round(cur_end, 3),
+                    "label":  slides[cur_slide].label,
+                })
+                cur_slide = None
+            continue
+
+        if cur_slide is None:
+            cur_slide = si
+            cur_start = s["start"]
+            cur_end   = s["end"]
+        elif si == cur_slide:
             cur_end = s["end"]
         else:
             timeline.append({
@@ -287,24 +549,21 @@ def build_timeline(segments: list[dict], slide_path: list[int],
                 "end":    round(cur_end, 3),
                 "label":  slides[cur_slide].label,
             })
-            cur_slide = slide_path[i]
+            cur_slide = si
             cur_start = s["start"]
             cur_end   = s["end"]
 
-    timeline.append({
-        "slide":  cur_slide + 1,
-        "start":  round(cur_start, 3),
-        "end":    round(cur_end, 3),
-        "label":  slides[cur_slide].label,
-    })
+    if cur_slide is not None:
+        timeline.append({
+            "slide":  cur_slide + 1,
+            "start":  round(cur_start, 3),
+            "end":    round(cur_end, 3),
+            "label":  slides[cur_slide].label,
+        })
     return timeline
 
 
 # ── Sparse-slide enrichment ───────────────────────────────────────────────────
-
-SPARSE_THRESHOLD = 30   # words; slides with fewer words are enriched
-NEIGHBOR_WORDS   = 60   # how many words to borrow from each neighbour
-
 
 def _enrich_sparse_slides(texts: list[str]) -> list[str]:
     """
@@ -357,9 +616,21 @@ def align(caption_path: Path, slide_path: Path,
 
     print(f"  Transcript: {len(segments)} segments, {caption['duration']:.0f}s")
 
-    print("  Extracting slide text...")
-    slides = load_slides(slide_path)
+    # ── Load slides (with image captioning + speaker notes) ───────────────────
+    describer = ImageDescriber()
+    img_cache = _load_image_cache(slide_path)
+    cache_size_before = len(img_cache)
+
+    print("  Extracting slide text (+ images + speaker notes)...")
+    slides = load_slides(slide_path, describer, img_cache)
     print(f"  Slides: {len(slides)} pages/slides")
+
+    # Save image cache if any new descriptions were generated
+    new_descriptions = len(img_cache) - cache_size_before
+    if new_descriptions > 0:
+        _save_image_cache(slide_path, img_cache)
+        print(f"  [img] {describer.api_calls} GPT-4o-mini vision API call(s) made "
+              f"({new_descriptions} new slide(s) described, cached for future runs)")
 
     # ── Embed slides ──────────────────────────────────────────────────────────
     if embedder is None:
@@ -392,6 +663,9 @@ def align(caption_path: Path, slide_path: Path,
         for rank in range(k):
             log_ll[t, idxs[t, rank]] = float(sims[t, rank])
 
+    # Save raw log-likelihoods for off-slide detection (before the prior)
+    log_ll_raw = log_ll.copy()
+
     # ── Temporal position prior ───────────────────────────────────────────────
     # At segment t, the professor is expected to be near slide
     # expected_s = (t_mid / total_duration) * (N - 1).
@@ -406,6 +680,17 @@ def align(caption_path: Path, slide_path: Path,
         prior      = -0.5 * ((slide_idx - expected_s) / PRIOR_SIGMA) ** 2
         log_ll[t] += prior
 
+    # ── Off-slide detection ───────────────────────────────────────────────────
+    # Segments where the best raw cosine is below threshold are flagged.
+    # The professor may be speaking off-topic, answering questions, or doing
+    # live demos that don't correspond to any slide.
+    raw_max_sim    = log_ll_raw.max(axis=1)   # (T,)
+    off_slide_mask = (raw_max_sim < OFF_SLIDE_THRESHOLD).tolist()
+    n_off = sum(off_slide_mask)
+    if n_off:
+        print(f"  Off-slide segments: {n_off}/{T} "
+              f"(raw cosine < {OFF_SLIDE_THRESHOLD})")
+
     # ── Viterbi ───────────────────────────────────────────────────────────────
     print("  Running Viterbi smoothing...")
     slide_path_idx = viterbi_smooth_fast(log_ll)
@@ -413,31 +698,35 @@ def align(caption_path: Path, slide_path: Path,
     # ── Per-segment results ───────────────────────────────────────────────────
     aligned_segments = []
     for i, seg in enumerate(segments):
-        si = slide_path_idx[i]
+        si        = slide_path_idx[i]
+        off       = off_slide_mask[i]
+        raw_sim   = round(float(log_ll_raw[i, si]), 4)
         aligned_segments.append({
-            "id":         seg["id"],
-            "start":      seg["start"],
-            "end":        seg["end"],
-            "text":       seg["text"],
-            "slide":      si + 1,              # 1-based for human readability
-            "slide_label": slides[si].label,
-            "similarity": round(float(log_ll[i, si]), 4),
+            "id":          seg["id"],
+            "start":       seg["start"],
+            "end":         seg["end"],
+            "text":        seg["text"],
+            "slide":       None if off else si + 1,    # 1-based; null = off-slide
+            "slide_label": None if off else slides[si].label,
+            "similarity":  raw_sim,
+            "off_slide":   off,
         })
 
-    timeline = build_timeline(segments, slide_path_idx, slides)
+    timeline = build_timeline(segments, slide_path_idx, slides, off_slide_mask)
 
     # ── Output ────────────────────────────────────────────────────────────────
     result = {
-        "lecture":       caption_path.stem,
-        "slide_file":    slide_path.name,
-        "total_slides":  len(slides),
+        "lecture":        caption_path.stem,
+        "slide_file":     slide_path.name,
+        "total_slides":   len(slides),
         "total_segments": len(segments),
-        "duration":      caption["duration"],
-        "language":      caption.get("language", ""),
-        "embed_model":   EMBED_MODEL,
-        "context_sec":   CONTEXT_SEC,
-        "segments":      aligned_segments,
-        "timeline":      timeline,
+        "off_slide_count": n_off,
+        "duration":       caption["duration"],
+        "language":       caption.get("language", ""),
+        "embed_model":    EMBED_MODEL,
+        "context_sec":    CONTEXT_SEC,
+        "segments":       aligned_segments,
+        "timeline":       timeline,
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -447,8 +736,9 @@ def align(caption_path: Path, slide_path: Path,
 
     # Summary
     slide_counts = {}
-    for si in slide_path_idx:
-        slide_counts[si] = slide_counts.get(si, 0) + 1
+    for i, si in enumerate(slide_path_idx):
+        if not off_slide_mask[i]:
+            slide_counts[si] = slide_counts.get(si, 0) + 1
     covered = len(slide_counts)
     print(f"  Covered {covered}/{N} slides across {len(timeline)} intervals")
     print(f"  Saved → {out_file}")
