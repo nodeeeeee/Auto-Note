@@ -29,7 +29,9 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import NamedTuple
 
@@ -745,12 +747,202 @@ def align(caption_path: Path, slide_path: Path,
     return out_file
 
 
+# ── Multi-slide alignment ─────────────────────────────────────────────────────
+
+def align_multi_slides(
+    caption_path: Path,
+    slide_paths: list[Path],
+    out_dir: Path,
+    embedder=None,
+) -> list[Path]:
+    """
+    Align one caption against one or more slide files.
+
+    For a single slide file this is identical to align().
+    For multiple slide files:
+      - Slides are concatenated into one global index (file 0 first, then file 1, …)
+      - A single Viterbi pass runs over the combined index
+      - Results are split back per file with local (1-based) slide numbering
+      - One output JSON is written per slide file, named {slide_stem}.json
+        so note_generation._find_alignment() matches each file perfectly
+
+    Returns list of output JSON paths (one per slide file).
+    """
+    if len(slide_paths) == 1:
+        out = align(caption_path, slide_paths[0], out_dir, embedder)
+        return [out] if isinstance(out, Path) else []
+
+    print(f"\n{'='*70}")
+    print(f"Caption : {caption_path.name}")
+    print(f"Slides  : {[p.name for p in slide_paths]}")
+    print(f"{'='*70}")
+
+    # ── Load caption ──────────────────────────────────────────────────────────
+    with open(caption_path, encoding="utf-8") as f:
+        caption = json.load(f)
+    segments: list[dict] = caption["segments"]
+    if not segments:
+        print("  [skip] Caption has no segments.")
+        return []
+    print(f"  Transcript: {len(segments)} segments, {caption['duration']:.0f}s")
+
+    # ── Load all slide files; track per-file offsets ──────────────────────────
+    describer    = ImageDescriber()
+    all_slides:  list[SlideText] = []
+    file_offsets: list[int]      = []   # global start index for each file
+    file_sizes:   list[int]      = []   # number of slides in each file
+    img_caches:   list[dict]     = []
+
+    for sp in slide_paths:
+        ic = _load_image_cache(sp)
+        ic_before = len(ic)
+        file_slides = load_slides(sp, describer, ic)
+        if len(ic) > ic_before:
+            _save_image_cache(sp, ic)
+        file_offsets.append(len(all_slides))
+        file_sizes.append(len(file_slides))
+        img_caches.append(ic)
+        all_slides.extend(file_slides)
+        print(f"  {sp.name}: {len(file_slides)} slides (global offset {file_offsets[-1]})")
+
+    N = len(all_slides)
+    print(f"  Combined: {N} slides total")
+
+    if describer.api_calls:
+        print(f"  [img] {describer.api_calls} GPT-4o-mini call(s) made")
+
+    # ── Embed combined slides ─────────────────────────────────────────────────
+    if embedder is None:
+        embedder = get_embedder()
+
+    slide_texts = _enrich_sparse_slides(
+        [s.text if s.text.strip() else s.label for s in all_slides]
+    )
+    print(f"  Embedding {N} combined slides...")
+    slide_embs = embed_texts(embedder, slide_texts)
+    index      = build_faiss_index(slide_embs)
+
+    # ── Embed transcript windows ──────────────────────────────────────────────
+    print(f"  Building context windows (±{CONTEXT_SEC:.0f}s)...")
+    window_texts = build_window_texts(segments, CONTEXT_SEC)
+    print(f"  Embedding {len(window_texts)} transcript windows...")
+    seg_embs = embed_texts(embedder, window_texts)
+
+    # ── FAISS search → log-likelihood matrix ──────────────────────────────────
+    print("  Querying FAISS index...")
+    T          = len(segments)
+    sims, idxs = index.search(seg_embs, N)
+    log_ll     = np.zeros((T, N), dtype=np.float64)
+    for t in range(T):
+        for rank in range(N):
+            log_ll[t, idxs[t, rank]] = float(sims[t, rank])
+    log_ll_raw = log_ll.copy()
+
+    # ── Temporal position prior ───────────────────────────────────────────────
+    total_duration = caption["duration"] or 1.0
+    slide_idx      = np.arange(N, dtype=np.float64)
+    for t, seg in enumerate(segments):
+        t_mid      = (seg["start"] + seg["end"]) / 2.0
+        expected_s = (t_mid / total_duration) * (N - 1)
+        prior      = -0.5 * ((slide_idx - expected_s) / PRIOR_SIGMA) ** 2
+        log_ll[t] += prior
+
+    # ── Off-slide detection ───────────────────────────────────────────────────
+    raw_max_sim    = log_ll_raw.max(axis=1)
+    off_slide_mask = (raw_max_sim < OFF_SLIDE_THRESHOLD).tolist()
+    n_off          = sum(off_slide_mask)
+    if n_off:
+        print(f"  Off-slide segments: {n_off}/{T} (raw cosine < {OFF_SLIDE_THRESHOLD})")
+
+    # ── Viterbi ───────────────────────────────────────────────────────────────
+    print("  Running Viterbi smoothing...")
+    global_path = viterbi_smooth_fast(log_ll)
+
+    # ── Split results per file and save ───────────────────────────────────────
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_files: list[Path] = []
+
+    for fi, (sp, off, size) in enumerate(zip(slide_paths, file_offsets, file_sizes)):
+        file_slides = all_slides[off : off + size]
+
+        aligned_segments = []
+        for i, seg in enumerate(segments):
+            g_si    = global_path[i]
+            off_seg = off_slide_mask[i]
+            raw_sim = round(float(log_ll_raw[i, g_si]), 4)
+
+            # Segment belongs to this file if its global slide index is in range
+            in_file = (off <= g_si < off + size) and not off_seg
+            local_si = (g_si - off) if in_file else None
+
+            aligned_segments.append({
+                "id":          seg["id"],
+                "start":       seg["start"],
+                "end":         seg["end"],
+                "text":        seg["text"],
+                "slide":       (local_si + 1) if in_file else None,
+                "slide_label": file_slides[local_si].label if in_file else None,
+                "similarity":  raw_sim,
+                "off_slide":   not in_file,
+            })
+
+        # Build per-file Viterbi path (clamp to local range for timeline)
+        local_path = [
+            max(0, min(global_path[i] - off, size - 1))
+            for i in range(T)
+        ]
+        # off_slide mask for timeline: original off_slide OR assigned to other file
+        local_off = [
+            off_slide_mask[i] or not (off <= global_path[i] < off + size)
+            for i in range(T)
+        ]
+        timeline = build_timeline(segments, local_path, file_slides, local_off)
+
+        covered = len({s["slide"] for s in aligned_segments if s["slide"] is not None})
+        print(f"  {sp.name}: {covered}/{size} slides covered, "
+              f"{len(timeline)} timeline intervals")
+
+        result = {
+            "lecture":         caption_path.stem,
+            "slide_file":      sp.name,
+            "slide_files_all": [p.name for p in slide_paths],
+            "file_idx":        fi + 1,
+            "total_slides":    size,
+            "total_segments":  T,
+            "off_slide_count": sum(1 for s in aligned_segments if s["off_slide"]),
+            "duration":        caption["duration"],
+            "language":        caption.get("language", ""),
+            "embed_model":     EMBED_MODEL,
+            "context_sec":     CONTEXT_SEC,
+            "segments":        aligned_segments,
+            "timeline":        timeline,
+        }
+
+        # Name by slide stem so _find_alignment() in note_generation.py scores 1.0
+        out_file = out_dir / f"{sp.stem}.json"
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        print(f"  Saved → {out_file}")
+        out_files.append(out_file)
+
+    return out_files
+
+
 # ── Auto-discovery ────────────────────────────────────────────────────────────
 
 def _candidate_slides(course_dir: Path) -> list[Path]:
     """All PDF/PPTX/DOCX under [course]/materials/."""
     exts = {".pdf", ".pptx", ".ppt", ".docx", ".doc"}
     return [p for p in (course_dir / "materials").rglob("*") if p.suffix.lower() in exts]
+
+
+def _lec_num(path: Path) -> int | None:
+    """Extract lecture number from a filename, e.g. L02-foo → 2. Returns None if not found.
+
+    The negative lookbehind prevents matching 'l' inside words like 'tutorial02'.
+    """
+    m = re.search(r"(?<![a-zA-Z])[Ll](?:ec(?:ture)?)?[-_]?0*(\d+)", path.stem)
+    return int(m.group(1)) if m else None
 
 
 def _name_similarity(a: str, b: str) -> float:
@@ -763,7 +955,7 @@ def _name_similarity(a: str, b: str) -> float:
 
 
 def find_best_slide(caption_path: Path, slide_candidates: list[Path]) -> Path | None:
-    """Return the slide file most likely corresponding to the caption."""
+    """Return the slide file most likely corresponding to the caption (single-file fallback)."""
     stem = caption_path.stem
     best_score, best = 0.0, None
     for sp in slide_candidates:
@@ -773,43 +965,181 @@ def find_best_slide(caption_path: Path, slide_candidates: list[Path]) -> Path | 
     return best if best_score > 0.05 else None
 
 
+def _find_best_slide_group(
+    caption_path: Path,
+    slides_by_num: dict[int, list[Path]],
+    all_slides: list[Path],
+) -> list[Path]:
+    """
+    Return the best-matching group of slide files for a caption.
+
+    Priority:
+      1. If the caption filename contains a lecture number that exists in
+         slides_by_num, return that group (exact number match).
+      2. Otherwise, find the single best-matching slide by name similarity
+         and return its group.
+      3. If no group found, return the single best-matching slide as a list.
+    """
+    # Try to extract a lecture number directly from the caption name
+    num = _lec_num(caption_path)
+    if num is not None and num in slides_by_num:
+        return sorted(slides_by_num[num])
+
+    # Name-similarity fallback: find best matching slide then return its group
+    best = find_best_slide(caption_path, all_slides)
+    if best is None:
+        return []
+    best_num = _lec_num(best)
+    if best_num is not None and best_num in slides_by_num:
+        return sorted(slides_by_num[best_num])
+    return [best]
+
+
+def _sample_caption_text(caption_path: Path, max_segments: int = 40) -> str:
+    """Return text sampled evenly across the whole transcript."""
+    try:
+        with open(caption_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return ""
+    segs = data.get("segments", [])
+    if not segs:
+        return ""
+    step = max(1, len(segs) // max_segments)
+    return " ".join(
+        s["text"].strip() for s in segs[::step][:max_segments] if s.get("text")
+    )
+
+
+def _sample_slide_text(slide_path: Path, max_words: int = 400) -> str:
+    """Return text sampled evenly across all slides (no vision API)."""
+    try:
+        slides = load_slides(slide_path)   # describer=None → text only
+    except Exception:
+        return ""
+    if not slides:
+        return ""
+    step = max(1, len(slides) // 15)
+    sample = slides[::step][:15]
+    words = " ".join(s.text for s in sample).split()
+    return " ".join(words[:max_words])
+
+
+def _content_match_slide_group(
+    caption_path: Path,
+    slides_by_num: dict[int, list[Path]],
+    all_slides: list[Path],
+    embedder,
+    threshold: float = 0.20,
+) -> list[Path]:
+    """
+    Content-based fallback for when name matching fails.
+
+    Embeds a short sample of the caption transcript and a short sample of each
+    candidate slide file, then returns the slide-file group whose text is most
+    similar to the caption.  Returns [] when the best cosine similarity is below
+    *threshold* (prevents spurious matches when no slide is truly related).
+    """
+    caption_text = _sample_caption_text(caption_path)
+    if not caption_text.strip():
+        return []
+
+    # Build per-slide-file samples (skip files that yield no text)
+    valid: list[Path] = []
+    slide_texts: list[str] = []
+    for sp in all_slides:
+        t = _sample_slide_text(sp)
+        if t.strip():
+            valid.append(sp)
+            slide_texts.append(t)
+
+    if not valid:
+        return []
+
+    # Embed everything in one batch for efficiency
+    all_texts = [caption_text] + slide_texts
+    embs       = embed_texts(embedder, all_texts)   # already L2-normalised
+    cap_emb    = embs[0:1]                          # (1, D)
+    slide_embs = embs[1:]                           # (M, D)
+    sims       = (cap_emb @ slide_embs.T)[0]        # (M,) cosine similarities
+
+    best_idx = int(np.argmax(sims))
+    best_sim  = float(sims[best_idx])
+
+    if best_sim < threshold:
+        print(f"  [content-match] {caption_path.name}: best sim {best_sim:.3f} "
+              f"< {threshold} — no confident match found")
+        return []
+
+    best = valid[best_idx]
+    print(f"  [content-match] {caption_path.name} → {best.name}  (sim={best_sim:.3f})")
+
+    # Expand to the full group for this slide file
+    best_num = _lec_num(best)
+    if best_num is not None and best_num in slides_by_num:
+        return sorted(slides_by_num[best_num])
+    return [best]
+
+
 def process_course(course_id: int | str) -> None:
     course_dir = PROJECT_DIR / str(course_id)
-    captions   = list((course_dir / "captions").glob("*.json"))
-    slides     = _candidate_slides(course_dir)
+    captions   = sorted((course_dir / "captions").glob("*.json"))
+    all_slides = _candidate_slides(course_dir)
     out_dir    = course_dir / "alignment"
 
     if not captions:
         print(f"No captions found in {course_dir}/captions/")
         return
-    if not slides:
+    if not all_slides:
         print(f"No slide files found under {course_dir}/materials/")
         return
+
+    # Group slide files by lecture number
+    slides_by_num: dict[int, list[Path]] = defaultdict(list)
+    for sp in all_slides:
+        num = _lec_num(sp)
+        if num is not None:
+            slides_by_num[num].append(sp)
 
     embedder = get_embedder()
 
     for cap in captions:
-        out_file = out_dir / f"{cap.stem}.json"
-        if out_file.exists():
-            print(f"  [skip] Already aligned: {cap.stem}")
+        slide_group = _find_best_slide_group(cap, slides_by_num, all_slides)
+        if not slide_group:
+            slide_group = _content_match_slide_group(
+                cap, slides_by_num, all_slides, embedder
+            )
+        if not slide_group:
+            print(f"  [warn] No matching slides for {cap.name} — skipping")
             continue
 
-        slide = find_best_slide(cap, slides)
-        if slide is None:
-            print(f"  [warn] No matching slide for {cap.name} — skipping")
-            continue
+        # Check if all output files for this group already exist
+        if len(slide_group) == 1:
+            out_file = out_dir / f"{cap.stem}.json"   # legacy single-file naming
+            if out_file.exists():
+                print(f"  [skip] Already aligned: {cap.stem}")
+                continue
+        else:
+            if all((out_dir / f"{sp.stem}.json").exists() for sp in slide_group):
+                print(f"  [skip] Already aligned: {[sp.name for sp in slide_group]}")
+                continue
 
-        align(cap, slide, out_dir, embedder=embedder)
+        align_multi_slides(cap, slide_group, out_dir, embedder=embedder)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Semantic caption↔slide alignment")
-    parser.add_argument("--caption", metavar="PATH", help="Whisper caption JSON")
-    parser.add_argument("--slides",  metavar="PATH", help="Slide file (PDF/PPTX/DOCX)")
-    parser.add_argument("--course",  metavar="ID",   help="Auto-process a course folder")
-    parser.add_argument("--out",     metavar="DIR",  help="Output directory (default: [course]/alignment)")
+    parser.add_argument("--caption", metavar="PATH",
+                        help="Whisper caption JSON")
+    parser.add_argument("--slides",  metavar="PATH", nargs="+",
+                        help="One or more slide files (PDF/PPTX/DOCX). "
+                             "Multiple files are concatenated in order.")
+    parser.add_argument("--course",  metavar="ID",
+                        help="Auto-process a course folder")
+    parser.add_argument("--out",     metavar="DIR",
+                        help="Output directory (default: [course]/alignment)")
     args = parser.parse_args()
 
     if args.course:
@@ -819,22 +1149,20 @@ def main() -> None:
     if not args.caption or not args.slides:
         parser.error("Provide both --caption and --slides, or use --course ID")
 
-    cap_path   = Path(args.caption)
-    slide_path = Path(args.slides)
+    cap_path    = Path(args.caption)
+    slide_paths = [Path(p) for p in args.slides]
 
     if not cap_path.exists():
         print(f"[error] Caption not found: {cap_path}"); sys.exit(1)
-    if not slide_path.exists():
-        print(f"[error] Slides not found: {slide_path}"); sys.exit(1)
+    for sp in slide_paths:
+        if not sp.exists():
+            print(f"[error] Slides not found: {sp}"); sys.exit(1)
 
     # Infer output dir from caption path: two levels up → alignment/
-    if args.out:
-        out_dir = Path(args.out)
-    else:
-        out_dir = cap_path.parent.parent / "alignment"
+    out_dir = Path(args.out) if args.out else cap_path.parent.parent / "alignment"
 
     embedder = get_embedder()
-    align(cap_path, slide_path, out_dir, embedder=embedder)
+    align_multi_slides(cap_path, slide_paths, out_dir, embedder=embedder)
 
 
 if __name__ == "__main__":

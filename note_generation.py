@@ -187,7 +187,8 @@ def _desc_has_visual(desc: str) -> bool:
 
 
 def _img_ref_pattern() -> re.Pattern:
-    return re.compile(r"!\[Slide \d+\]\((images/L\d{2}/slide_\d{3}\.png)\)")
+    # Matches both images/L04/slide_001.png (single file) and images/L04_F02/slide_001.png (multi-file)
+    return re.compile(r"!\[Slide \d+\]\((images/L\d{2}(?:_F\d{2})?/slide_\d{3}\.png)\)")
 
 
 def _vision_keep(client, img_path: Path) -> bool:
@@ -256,35 +257,31 @@ Reply with exactly one word: KEEP or REMOVE."""
 def filter_images_pass(
     notes_text: str,
     notes_dir: Path,
-    slides_by_lec: dict[int, list[SlideInfo]],
-    img_caches: dict[int, dict],
+    lectures: list["LectureData"],
     client,
 ) -> tuple[str, int, int]:
     """Post-processing agent: remove low-value image references from merged notes.
 
     Decision priority:
-      1. Near-empty slide (≤IMAGE_FILTER_WORD_MAX words) → REMOVE (no API)
-      2. Title/divider pattern → REMOVE (no API)
-      3. Image cache from semantic_alignment exists for this slide → KEEP (already vision-verified)
-      4. slide has code → KEEP
-      5. All other cases → vision API decision
+      1. Cache-verified AND description mentions visual elements → KEEP
+      2. Title/divider pattern → REMOVE
+      3. All other cases → vision API decision
 
     Returns (cleaned_text, n_kept, n_removed).
     """
     pattern = _img_ref_pattern()
 
-    # Build slide lookup: "images/L01/slide_001.png" → SlideInfo
-    slide_lookup: dict[str, SlideInfo] = {}
-    for lec_num, slides in slides_by_lec.items():
-        for s in slides:
-            key = f"images/L{lec_num:02d}/slide_{s.index+1:03d}.png"
-            slide_lookup[key] = s
-
-    # Build cache lookup: "images/L01/slide_001.png" → cache description or None
-    # image cache keys are "page_{index}" (0-based)
-    def _cache_desc(lec_num: int, slide_index: int) -> str:
-        cache = img_caches.get(lec_num, {})
-        return cache.get(f"page_{slide_index}", "")
+    # Build unified lookup: image rel-path → (SlideInfo, LectureData)
+    # Mirrors the backward-compat naming used in render_chunk_images:
+    #   file_idx==1  → images/L04/slide_001.png
+    #   file_idx>=2  → images/L04_F02/slide_001.png
+    slide_ld_lookup: dict[str, tuple[SlideInfo, "LectureData"]] = {}
+    for ld in lectures:
+        prefix = (f"L{ld.num:02d}" if ld.file_idx == 1
+                  else f"L{ld.num:02d}_F{ld.file_idx:02d}")
+        for s in ld.slides:
+            key = f"images/{prefix}/slide_{s.index+1:03d}.png"
+            slide_ld_lookup[key] = (s, ld)
 
     # Collect unique paths and decide keep/remove
     decisions: dict[str, bool] = {}   # path → True=keep
@@ -293,29 +290,24 @@ def filter_images_pass(
         if rel in decisions:
             continue
 
-        slide = slide_lookup.get(rel)
+        pair    = slide_ld_lookup.get(rel)
+        slide   = pair[0] if pair else None
+        owner   = pair[1] if pair else None
         img_path = notes_dir / rel
 
         # ① Cache-verified AND description mentions visual elements → KEEP
-        #    Text-heavy slides whose cache description lacks visual keywords
-        #    fall through to the vision API instead of being auto-kept.
-        if slide:
-            lec_num_found = next(
-                (n for n, sl in slides_by_lec.items() if slide in sl), None
-            )
-            if lec_num_found:
-                desc = _cache_desc(lec_num_found, slide.index)
-                if desc and _desc_has_visual(desc):
-                    decisions[rel] = True
-                    continue
+        if slide and owner:
+            desc = owner.img_cache.get(f"page_{slide.index}", "")
+            if desc and _desc_has_visual(desc):
+                decisions[rel] = True
+                continue
 
         # ② Title/divider pattern → REMOVE
         if slide and _TITLE_PATTERN.search(slide.text):
             decisions[rel] = False
             continue
 
-        # ⑤ Vision API — the prompt instructs it to REMOVE slides that consist
-        #    mainly of bullet-point text or prose (words only, no diagrams).
+        # ③ Vision API — KEEP only if dominant content is a visual element
         decisions[rel] = _vision_keep(client, img_path)
 
     kept    = sum(1 for v in decisions.values() if v)
@@ -572,8 +564,10 @@ def _build_chunk_prompt(
 
 # ── Section-by-section generation ────────────────────────────────────────────
 
-def _section_path(sections_dir: Path, lec_num: int, ci: int) -> Path:
-    return sections_dir / f"L{lec_num:02d}_S{ci:02d}.md"
+def _section_path(sections_dir: Path, lec_num: int, ci: int, file_idx: int = 1) -> Path:
+    if file_idx == 1:
+        return sections_dir / f"L{lec_num:02d}_S{ci:02d}.md"
+    return sections_dir / f"L{lec_num:02d}_F{file_idx:02d}_S{ci:02d}.md"
 
 
 def generate_section(
@@ -592,16 +586,18 @@ def generate_section(
     force: bool = False,
 ) -> str:
     """Generate (or load from cache) one section and save it to sections_dir."""
-    sec_file = _section_path(sections_dir, lec_num, ci)
+    sec_file = _section_path(sections_dir, lec_num, ci, ld.file_idx)
 
     if not force and sec_file.exists() and sec_file.stat().st_size > 50:
         if bar:
-            bar.set_postfix_str(f"L{lec_num} §{ci} cached")
+            fi = f"F{ld.file_idx} " if ld.file_idx > 1 else ""
+            bar.set_postfix_str(f"L{lec_num}{fi}§{ci} cached")
         return sec_file.read_text(encoding="utf-8")
 
     chunk_title = _chunk_title(chunk)
     if bar:
-        bar.set_postfix_str(f"L{lec_num} §{ci}/{chunk_title[:22]} generating")
+        fi = f"F{ld.file_idx} " if ld.file_idx > 1 else ""
+        bar.set_postfix_str(f"L{lec_num}{fi}§{ci}/{chunk_title[:22]} generating")
 
     # Render only this chunk's slide images (lazy, avoids OOM)
     img_map = ld.render_chunk_images([s.index for s in chunk])
@@ -788,8 +784,10 @@ def _print_score(scores: dict, label: str) -> None:
 # ── LectureData ───────────────────────────────────────────────────────────────
 
 class LectureData:
-    def __init__(self, num: int, slide_path: Path, alignment_path: Path | None):
+    def __init__(self, num: int, slide_path: Path, alignment_path: Path | None,
+                 file_idx: int = 1):
         self.num            = num
+        self.file_idx       = file_idx
         self.slide_path     = slide_path
         self.alignment_path = alignment_path
         self.slides:         list[SlideInfo] = []
@@ -811,8 +809,11 @@ class LectureData:
         self._out_dir = out_dir
 
     def render_chunk_images(self, slide_indices: list[int]) -> dict[int, Path]:
-        """Render only the slides in this chunk into images/L{num}/, cache results."""
-        img_dir = self._out_dir / "images" / f"L{self.num:02d}"
+        """Render only the slides in this chunk into images/L{num}[_F{idx}]/, cache results."""
+        if self.file_idx == 1:
+            img_dir = self._out_dir / "images" / f"L{self.num:02d}"
+        else:
+            img_dir = self._out_dir / "images" / f"L{self.num:02d}_F{self.file_idx:02d}"
         needed = [i for i in slide_indices if i not in self.img_map]
         if needed:
             new = render_slide_images(self.slide_path, img_dir, needed)
@@ -850,20 +851,36 @@ def merge_sections(
     all_compact: list[dict],
 ) -> tuple[Path, dict]:
     """Read all saved section files and merge into one final Markdown note."""
+    from itertools import groupby
+
     note_sections: list[str] = []
 
-    for ld in lectures:
-        n_chunks = max(1, (len(ld.slides) + CHAPTER_SIZE - 1) // CHAPTER_SIZE)
-        chunk_parts: list[str] = []
-        for ci in range(1, n_chunks + 1):
-            sec_file = _section_path(sections_dir, ld.num, ci)
-            if sec_file.exists() and sec_file.stat().st_size > 50:
-                chunk_parts.append(sec_file.read_text(encoding="utf-8"))
-            else:
-                tqdm.write(f"  [warn] Missing section L{ld.num} §{ci} — skipping")
-        if chunk_parts:
-            heading = f"## Lecture {ld.num} — {ld.title}"
-            note_sections.append(f"{heading}\n\n" + "\n\n".join(chunk_parts))
+    for lec_num, ld_iter in groupby(lectures, key=lambda x: x.num):
+        ld_group   = list(ld_iter)
+        multi_file = len(ld_group) > 1
+        lec_heading = f"## Lecture {lec_num} — {ld_group[0].title}"
+        lec_parts: list[str] = []
+
+        for ld in ld_group:
+            n_chunks   = max(1, (len(ld.slides) + CHAPTER_SIZE - 1) // CHAPTER_SIZE)
+            file_parts: list[str] = []
+            for ci in range(1, n_chunks + 1):
+                sec_file = _section_path(sections_dir, ld.num, ci, ld.file_idx)
+                if sec_file.exists() and sec_file.stat().st_size > 50:
+                    file_parts.append(sec_file.read_text(encoding="utf-8"))
+                else:
+                    fi = f" F{ld.file_idx}" if multi_file else ""
+                    tqdm.write(f"  [warn] Missing section L{ld.num}{fi} §{ci} — skipping")
+
+            if file_parts:
+                if multi_file:
+                    part_heading = f"### Part {ld.file_idx}: {ld.slide_path.stem}"
+                    lec_parts.append(f"{part_heading}\n\n" + "\n\n".join(file_parts))
+                else:
+                    lec_parts.extend(file_parts)
+
+        if lec_parts:
+            note_sections.append(f"{lec_heading}\n\n" + "\n\n".join(lec_parts))
 
     # Exam notes — generated from the merged content
     tqdm.write("  Generating exam notes…")
@@ -886,11 +903,7 @@ def merge_sections(
 
     # ── Image filter agent pass ────────────────────────────────────────────────
     tqdm.write("  Running image filter pass…")
-    slides_by_lec = {ld.num: ld.slides for ld in lectures}
-    img_caches    = {ld.num: ld.img_cache for ld in lectures}
-    full_notes, _, _ = filter_images_pass(
-        full_notes, out_path.parent, slides_by_lec, img_caches, client
-    )
+    full_notes, _, _ = filter_images_pass(full_notes, out_path.parent, lectures, client)
 
     out_path.write_text(full_notes, encoding="utf-8")
     tqdm.write(f"\n  Merged → {out_path}  ({len(full_notes):,} chars)")
@@ -1047,13 +1060,26 @@ def _discover_lectures(course_dir: Path) -> list[LectureData]:
         p for p in mat_dir.rglob("*")
         if p.suffix.lower() in exts and "image_cache" not in p.name
     ])
-    lectures: list[LectureData] = []
+
+    # Group files by lecture number; files without a number get a unique high index
+    from collections import defaultdict
+    by_num: dict[int, list[Path]] = defaultdict(list)
+    auto_num = 1000
     for sp in slide_files:
-        m       = re.search(r"[Ll](?:ec(?:ture)?)?[-_]?0*(\d+)", sp.stem)
-        lec_num = int(m.group(1)) if m else (len(lectures) + 1)
-        align   = _find_alignment(sp, course_dir)
-        lectures.append(LectureData(lec_num, sp, align))
-    lectures.sort(key=lambda x: x.num)
+        m = re.search(r"(?<![a-zA-Z])[Ll](?:ec(?:ture)?)?[-_]?0*(\d+)", sp.stem)
+        if m:
+            lec_num = int(m.group(1))
+        else:
+            lec_num  = auto_num
+            auto_num += 1
+        by_num[lec_num].append(sp)
+
+    lectures: list[LectureData] = []
+    for lec_num in sorted(by_num.keys()):
+        files = sorted(by_num[lec_num])   # alphabetical within same lecture number
+        for file_idx, sp in enumerate(files, start=1):
+            align = _find_alignment(sp, course_dir)
+            lectures.append(LectureData(lec_num, sp, align, file_idx=file_idx))
     return lectures
 
 
@@ -1098,8 +1124,9 @@ def main() -> None:
 
         print(f"Found {len(lectures)} lectures:")
         for ld in lectures:
-            a = "+ alignment" if ld.alignment_path else "(slide-only)"
-            print(f"  L{ld.num}: {ld.slide_path.name}  {a}")
+            a  = "+ alignment" if ld.alignment_path else "(slide-only)"
+            fi = f" [part {ld.file_idx}]" if ld.file_idx > 1 else ""
+            print(f"  L{ld.num}{fi}: {ld.slide_path.name}  {a}")
 
         ext_out      = ".mdx" if args.format == "mdx" else ".md"
         out_path     = Path(args.out) if args.out else \
