@@ -1,0 +1,35 @@
+# ── API keys & credentials (never commit these) ───────────────────────────────
+canvas_token.txt
+canvas_credentials.txt
+openai_api.txt
+anthropic_key.txt
+*_api.txt
+*_key.txt
+*_token.txt
+*_secret.txt
+.env
+
+# ── Downloaded course data ────────────────────────────────────────────────────
+85367/
+85377/
+85397/
+85427/
+manifest.json
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ── PyInstaller build output ─────────────────────────────────────────────────
+dist/
+build/
+*.spec.bak
+
+# ── User config ───────────────────────────────────────────────────────────────
+config.json
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.egg-info/
+.DS_Store
