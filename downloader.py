@@ -36,15 +36,21 @@ from tqdm import tqdm
 # ── Configuration ──────────────────────────────────────────────────────────────
 
 PROJECT_DIR   = Path(__file__).parent
-CANVAS_URL    = "https://canvas.nus.edu.sg"
+MANIFEST_FILE = PROJECT_DIR / "manifest.json"
+
+# ── User-configurable connection settings (set via GUI Settings page) ──────────
+_config_file = PROJECT_DIR / "config.json"
+_config: dict = json.load(open(_config_file)) if _config_file.exists() else {}
+
+CANVAS_URL   = _config.get("CANVAS_URL",   "")
+PANOPTO_HOST = _config.get("PANOPTO_HOST", "")
+
 _canvas_token_file = PROJECT_DIR / "canvas_token.txt"
-CANVAS_TOKEN  = (
+CANVAS_TOKEN = (
     _canvas_token_file.read_text().strip()
     if _canvas_token_file.exists() else
     os.environ.get("CANVAS_TOKEN", "")
 )
-PANOPTO_HOST  = "mediaweb.ap.panopto.com"
-MANIFEST_FILE = PROJECT_DIR / "manifest.json"
 SIZE_LIMIT    = 1 * 1024 ** 3   # 1 GB
 
 SKIP_COURSE_KEYWORDS = [

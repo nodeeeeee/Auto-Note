@@ -40,6 +40,7 @@ VERIFY_MODEL      = "gpt-4.1-mini"
 VERIFY_NOTES      = True
 QUALITY_TARGET    = 8.0
 IMAGE_RENDER_SCALE = 1.5
+NOTE_LANGUAGE     = "en"    # "en" = English | "zh" = Chinese
 
 CHAPTER_SIZE      = 15      # slides per GPT call
 MAX_TRANSCRIPT_CHARS = 350  # per slide in prompt (saves tokens)
@@ -51,7 +52,10 @@ MIN_NOTE_WORDS_PER_SLIDE = 60   # expected words per slide in final note
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-_SYSTEM = """\
+_PROMPTS: dict[str, dict] = {
+
+"zh": dict(
+system="""\
 你是一名顶尖大学计算机科学课程的助教，负责根据讲义和课堂录音为学生撰写高质量的中文学习笔记。
 
 写作规范：
@@ -74,9 +78,8 @@ _SYSTEM = """\
    - 格式：`![Slide N](images/LXX/slide_NNN.png)`（LXX 由调用方提供，禁止自行修改）。
    - 纯文字定义幻灯片（无图表/代码/公式）可跳过。
 9. 绝对禁止捏造原始材料中不存在的技术细节。
-"""
-
-_CHUNK_PROMPT = """\
+""",
+chunk="""\
 请为以下课程片段（{course_name} Lecture {lec_num}: {lec_title}）撰写学习笔记。
 
 ## 本片段幻灯片列表
@@ -97,9 +100,8 @@ _CHUNK_PROMPT = """\
   路径必须完全照抄上方「可用图片」列表中给出的路径（含 images/L** 子目录），禁止自造路径。
 - 代码示例写完整可编译片段（含必要 include/imports），用正确的语言标签（```c, ```cpp, ```python）。
 - 只写本片段内容，不要引入其他讲座的内容
-"""
-
-_SLIDE_ONLY_PROMPT = """\
+""",
+slide_only="""\
 请根据以下幻灯片内容，撰写 {course_name} Lecture {lec_num}: {lec_title} 的学习笔记。
 （该讲座没有录音，请结合你的 CS 知识展开解释。）
 
@@ -117,9 +119,8 @@ _SLIDE_ONLY_PROMPT = """\
 - 图片插入：每隔 2–3 个段落插入一张相关幻灯片图片，紧跟该概念说明之后。
   路径必须完全照抄上方「可用图片」列表中给出的路径（含 images/L** 子目录），禁止自造路径。
 - 代码示例写完整可编译片段，用正确的语言标签（```c, ```cpp, ```python）。
-"""
-
-_VERIFY_PROMPT = """\
+""",
+verify="""\
 请检查以下笔记片段中的技术术语是否与幻灯片一致，以及是否存在明显的事实错误。
 
 **参考术语表（来自幻灯片）：**
@@ -130,9 +131,8 @@ _VERIFY_PROMPT = """\
 
 如果没有问题，直接回复 APPROVED（仅此一词）。
 如果有术语错误或事实错误，返回修正后的完整笔记片段（不加任何说明）。
-"""
-
-_EXAM_PROMPT = """\
+""",
+exam="""\
 以下是 {course_name} 的全部讲座笔记摘要。请在最后汇总一个考试速记章节。
 
 格式要求：
@@ -142,22 +142,128 @@ _EXAM_PROMPT = """\
 
 笔记摘要：
 {summary}
-"""
-
-_DETAIL_INSTRUCTIONS = [
-    (range(0, 3),  "要点式，每条一行，不展开。"),
-    (range(3, 6),  "使用有层次的要点结构：每个主要概念用一级bullet（`-`）列出，"
-                  "其下属细节、原因或子分类用二级bullet（`  -`）缩进展开（1–3条）。"
-                  "避免写成连续段落；层级关系必须通过缩进清晰体现。"),
+""",
+no_transcript="（本片段无录音逐字稿）",
+detail_instructions=[
+    (range(0, 3),  "极简要点：每个概念仅一行，不展开，每张幻灯片最多3条。"),
+    (range(3, 6),  "有层次的要点结构：每个主要概念一条一级bullet（`-`），"
+                   "其下最多2条二级bullet（`  -`）补充关键细节。"
+                   "每张幻灯片合计不超过5条，禁止写连续段落。"),
     (range(6, 9),  "详细段落：概念、原理、教授示例与类比全部包含。"),
     (range(9, 11), "最高详细度：包含所有细节、边界情况、与其他章节的联系及考点标注。"),
-]
+],
+),  # end zh
+
+"en": dict(
+system="""\
+You are a teaching assistant at a top university, writing high-quality study notes for computer science courses based on lecture slides and audio transcripts.
+
+Writing guidelines:
+1. Write in English. Keep technical terms in English.
+2. Never use a third-person narrator perspective. Do not write "the professor said", "the lecturer pointed out", etc. Focus on the knowledge itself — state concepts, principles, and conclusions directly:
+   - ✗ "The professor explained that…"  →  ✓ "The key idea is…"
+   - ✗ "The lecturer used an example…"  →  ✓ "As an example,…"
+3. Structure content as: concept → principle → example → exam focus. Write fluent explanatory paragraphs; do not list slide bullets verbatim.
+4. Use LaTeX for math: inline $...$, display $$...$$.
+5. Code examples must be complete, compilable/runnable snippets (with necessary includes, function signatures, main, etc.) using correct syntax highlighting (```c, ```cpp, ```python, etc.). Use pseudocode only when no real equivalent exists, tagged as ```pseudo.
+6. Mark exam-critical content with:
+     > [!IMPORTANT]
+     > content
+7. Use italics for interesting analogies or memory aids.
+8. Image insertion rules (strictly follow):
+   - Insert one slide image every 2–3 concept paragraphs, directly relevant to the surrounding content.
+   - Place the image immediately after the last sentence of the concept it illustrates — never isolated at the start or end of a section.
+   - Format: `![Slide N](images/LXX/slide_NNN.png)` (LXX is provided by the caller — do not modify it).
+   - Skip purely text-definition slides (no diagrams/code/formulas).
+9. Never fabricate technical details not present in the source material.
+""",
+chunk="""\
+Write study notes for the following course segment ({course_name} Lecture {lec_num}: {lec_title}).
+
+## Slide list for this segment
+{slide_outline}
+
+## Lecture audio transcript (ordered by slide)
+{transcript_block}
+
+## Available images (slides with diagrams / code screenshots)
+{image_hints}
+
+---
+
+Requirements:
+- The section heading for this segment is `### {lec_num}.{chunk_idx} {chunk_title}` (**do not output this line** — it is added by the caller).
+- Detail level: {detail}/10. {detail_instruction}
+- Images: insert one related slide image every 2–3 paragraphs, immediately after the concept it illustrates. Copy the exact path from the "Available images" list above (including the images/L** subdirectory). Do not invent paths.
+- Code examples must be complete and compilable (with necessary includes/imports), using the correct language tag (```c, ```cpp, ```python).
+- Only cover the content in this segment; do not introduce material from other lectures.
+""",
+slide_only="""\
+Write study notes for {course_name} Lecture {lec_num}: {lec_title} based on the slides below.
+(No audio transcript is available — supplement with your CS knowledge where appropriate.)
+
+## Slide content
+{slide_outline}
+
+## Available images
+{image_hints}
+
+---
+
+Requirements:
+- The section heading is `### {lec_num}.{chunk_idx} {chunk_title}` (**do not output this line**).
+- Detail level: {detail}/10. {detail_instruction}
+- Images: insert one related slide image every 2–3 paragraphs, immediately after the concept it illustrates. Copy the exact path from the "Available images" list (including the images/L** subdirectory). Do not invent paths.
+- Code examples must be complete and compilable, using the correct language tag (```c, ```cpp, ```python).
+""",
+verify="""\
+Check the following note excerpt for technical terminology consistency with the slides, and for any obvious factual errors.
+
+**Reference glossary (from slides):**
+{term_list}
+
+**Note excerpt:**
+{draft}
+
+If there are no issues, reply APPROVED (this word only).
+If there are terminology or factual errors, return the corrected full note excerpt with no explanation.
+""",
+exam="""\
+Below are the complete lecture notes for {course_name}. Please append a concise exam cheat-sheet section at the end.
+
+Format:
+- Heading: `## Exam Notes`
+- Each entry: `N. **Topic**: one-sentence summary`
+- No more than 30 entries, covering key concepts, formulas, algorithm steps, and common confusion points from all lectures.
+
+Notes summary:
+{summary}
+""",
+no_transcript="(No audio transcript available for this segment.)",
+detail_instructions=[
+    (range(0, 3),  "Minimal bullets: one line per concept, no expansion, max 3 bullets per slide."),
+    (range(3, 6),  "Hierarchical bullets: one top-level bullet (`-`) per main concept, "
+                   "at most 2 sub-bullets (`  -`) for key details. "
+                   "Max 5 bullets total per slide. No prose paragraphs."),
+    (range(6, 9),  "Detailed paragraphs: cover concepts, principles, the lecturer's examples and analogies in full."),
+    (range(9, 11), "Maximum detail: include all nuances, edge cases, connections to other chapters, and exam pointers."),
+],
+),  # end en
+
+}  # end _PROMPTS
+
+
+def _P(key: str) -> str:
+    """Return the prompt string for the current NOTE_LANGUAGE, falling back to English."""
+    return _PROMPTS.get(NOTE_LANGUAGE, _PROMPTS["en"])[key]
+
 
 def _detail_instr(level: int) -> str:
-    for rng, txt in _DETAIL_INSTRUCTIONS:
+    instrs = _PROMPTS.get(NOTE_LANGUAGE, _PROMPTS["en"])["detail_instructions"]
+    for rng, txt in instrs:
         if level in rng:
             return txt
-    return _DETAIL_INSTRUCTIONS[2][1]
+    return instrs[2][1]
 
 # ── Image filter constants ────────────────────────────────────────────────────
 
@@ -191,7 +297,7 @@ def _img_ref_pattern() -> re.Pattern:
     return re.compile(r"!\[Slide \d+\]\((images/L\d{2}(?:_F\d{2})?/slide_\d{3}\.png)\)")
 
 
-def _vision_keep(client, img_path: Path, slide_text: str = "") -> bool:
+def _vision_keep(img_path: Path, slide_text: str = "") -> bool:
     """Ask GPT-4o-mini whether the slide image is worth including in notes.
 
     Uses slide_text as context so the model can reason about whether the
@@ -255,7 +361,8 @@ course schedule tables, "any questions?" slides, logos, or sponsor slides
 Reply with exactly one word: KEEP or REMOVE."""
 
     try:
-        r = client.chat.completions.create(
+        openai_client = _get_client_for(IMAGE_FILTER_MODEL)
+        r = openai_client.chat.completions.create(
             model=IMAGE_FILTER_MODEL,
             messages=[{"role": "user", "content": [
                 {"type": "image_url",
@@ -273,7 +380,6 @@ def filter_images_pass(
     notes_text: str,
     notes_dir: Path,
     lectures: list["LectureData"],
-    client,
 ) -> tuple[str, int, int]:
     """Post-processing agent: remove low-value image references from merged notes.
 
@@ -324,7 +430,7 @@ def filter_images_pass(
 
         # ③ Vision API — KEEP only if visual AND relevant to lecture content
         slide_text = slide.text if slide else ""
-        decisions[rel] = _vision_keep(client, img_path, slide_text)
+        decisions[rel] = _vision_keep(img_path, slide_text)
 
     kept    = sum(1 for v in decisions.values() if v)
     removed = sum(1 for v in decisions.values() if not v)
@@ -348,29 +454,85 @@ def filter_images_pass(
 def _max_tokens(level: int) -> int:
     # Per chunk (CHAPTER_SIZE slides).
     # gpt-5.x reasoning models consume tokens for internal thinking,
-    # so we need much larger budgets to get actual output.
-    if level < 3:  return 4000
-    if level < 6:  return 6000
+    # so we need larger budgets than the expected output length.
+    # Token budget directly caps output length — keep it proportional to detail level.
+    if level < 3:  return 2000
+    if level < 6:  return 3500
     if level < 9:  return 10000
     return 16000
 
 
-# ── OpenAI helpers ────────────────────────────────────────────────────────────
+# ── Multi-provider LLM helpers ────────────────────────────────────────────────
 
-def _get_client():
+def _provider(model: str) -> str:
+    if model.startswith("gemini"):
+        return "gemini"
+    if model.startswith("claude"):
+        return "anthropic"
+    return "openai"
+
+
+_client_cache: dict = {}
+
+
+def _make_client(provider: str):
     import os
-    from openai import OpenAI
-    key = os.environ.get("OPENAI_API_KEY", "")
-    if not key:
-        kf = PROJECT_DIR / "openai_api.txt"
-        if kf.exists():
-            key = kf.read_text().strip()
-    if not key:
-        raise RuntimeError("No OpenAI API key found")
-    return OpenAI(api_key=key)
+    if provider == "gemini":
+        from openai import OpenAI
+        key = os.environ.get("GEMINI_API_KEY", "")
+        if not key:
+            kf = PROJECT_DIR / "gemini_api.txt"
+            if kf.exists():
+                key = kf.read_text().strip()
+        if not key:
+            raise RuntimeError("No Gemini API key found (set gemini_api.txt or GEMINI_API_KEY)")
+        return OpenAI(
+            api_key=key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+    elif provider == "anthropic":
+        from anthropic import Anthropic
+        key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not key:
+            kf = PROJECT_DIR / "anthropic_key.txt"
+            if kf.exists():
+                key = kf.read_text().strip()
+        if not key:
+            raise RuntimeError("No Anthropic API key found (set anthropic_key.txt or ANTHROPIC_API_KEY)")
+        return Anthropic(api_key=key)
+    else:  # openai
+        from openai import OpenAI
+        key = os.environ.get("OPENAI_API_KEY", "")
+        if not key:
+            kf = PROJECT_DIR / "openai_api.txt"
+            if kf.exists():
+                key = kf.read_text().strip()
+        if not key:
+            raise RuntimeError("No OpenAI API key found (set openai_api.txt or OPENAI_API_KEY)")
+        return OpenAI(api_key=key)
 
 
-def _call(client, model: str, system: str, user: str, max_tokens: int) -> str:
+def _get_client_for(model: str):
+    """Return (and cache) the appropriate API client for the given model name."""
+    p = _provider(model)
+    if p not in _client_cache:
+        _client_cache[p] = _make_client(p)
+    return _client_cache[p]
+
+
+def _call(model: str, system: str, user: str, max_tokens: int) -> str:
+    """Call any supported LLM (OpenAI, Gemini, Anthropic) with a text prompt."""
+    client = _get_client_for(model)
+
+    if _provider(model) == "anthropic":
+        kwargs: dict = {"model": model, "max_tokens": max_tokens,
+                        "messages": [{"role": "user", "content": user}]}
+        if system:
+            kwargs["system"] = system
+        r = client.messages.create(**kwargs)
+        return r.content[0].text.strip() if r.content else ""
+
+    # OpenAI-compatible (OpenAI + Gemini via OpenAI compat layer)
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
@@ -561,16 +723,16 @@ def _build_chunk_prompt(
                 tx = cs["transcript"][:MAX_TRANSCRIPT_CHARS]
                 transcript_lines.append(
                     f"[{mm:02d}:{ss:02d} Slide {s.index+1}「{s.label}」]\n{tx}")
-        transcript_block = "\n\n".join(transcript_lines) or "（本片段无录音逐字稿）"
+        transcript_block = "\n\n".join(transcript_lines) or _P("no_transcript")
 
-        return _CHUNK_PROMPT.format(
+        return _P("chunk").format(
             course_name=course_name, lec_num=lec_num, lec_title=lec_title,
             slide_outline=slide_outline, transcript_block=transcript_block,
             image_hints=image_hints, chunk_idx=chunk_idx, chunk_title=chunk_title,
             detail=detail, detail_instruction=_detail_instr(detail),
         )
     else:
-        return _SLIDE_ONLY_PROMPT.format(
+        return _P("slide_only").format(
             course_name=course_name, lec_num=lec_num, lec_title=lec_title,
             slide_outline=slide_outline, image_hints=image_hints,
             chunk_idx=chunk_idx, chunk_title=chunk_title,
@@ -587,7 +749,6 @@ def _section_path(sections_dir: Path, lec_num: int, ci: int, file_idx: int = 1) 
 
 
 def generate_section(
-    client,
     lec_num: int,
     lec_title: str,
     course_name: str,
@@ -633,7 +794,7 @@ def generate_section(
         has_transcript=has_transcript,
     )
 
-    draft = _call(client, NOTE_MODEL, _SYSTEM, user, _max_tokens(detail))
+    draft = _call(NOTE_MODEL, _P("system"), user, _max_tokens(detail))
 
     if not draft:
         tqdm.write(f"  [warn] Empty draft for L{lec_num} §{ci} — skipping")
@@ -644,8 +805,8 @@ def generate_section(
             for t in re.findall(r"\b[A-Z][a-zA-Z]{3,}\b|\b[A-Z]{3,}\b", s.text):
                 terms.add(t)
         term_list = ", ".join(sorted(terms)[:30])
-        v_user = _VERIFY_PROMPT.format(term_list=term_list, draft=draft[:2500])
-        v_result = _call(client, VERIFY_MODEL, "", v_user, 1500)
+        v_user = _P("verify").format(term_list=term_list, draft=draft[:2500])
+        v_result = _call(VERIFY_MODEL, "", v_user, 1500)
         if not v_result.strip().upper().startswith("APPROVED"):
             if len(v_result) > len(draft) * 0.3:
                 draft = v_result
@@ -659,7 +820,6 @@ def generate_section(
 
 
 def generate_lecture(
-    client,
     lec_num: int,
     lec_title: str,
     course_name: str,
@@ -678,7 +838,6 @@ def generate_lecture(
     parts: list[str] = []
     for ci, chunk in enumerate(chunks, start=1):
         content = generate_section(
-            client=client,
             lec_num=lec_num,
             lec_title=lec_title,
             course_name=course_name,
@@ -862,7 +1021,6 @@ def merge_sections(
     lectures: list["LectureData"],
     sections_dir: Path,
     out_path: Path,
-    client,
     all_slides: list[SlideInfo],
     all_compact: list[dict],
 ) -> tuple[Path, dict]:
@@ -905,8 +1063,8 @@ def merge_sections(
     if exam_section_file.exists() and exam_section_file.stat().st_size > 50:
         exam_md = exam_section_file.read_text(encoding="utf-8")
     else:
-        exam_md = _call(client, NOTE_MODEL, _SYSTEM,
-                        _EXAM_PROMPT.format(course_name=course_name, summary=summary),
+        exam_md = _call(NOTE_MODEL, _P("system"),
+                        _P("exam").format(course_name=course_name, summary=summary),
                         4000)
         exam_section_file.write_text(exam_md, encoding="utf-8")
     note_sections.append(exam_md)
@@ -919,7 +1077,7 @@ def merge_sections(
 
     # ── Image filter agent pass ────────────────────────────────────────────────
     tqdm.write("  Running image filter pass…")
-    full_notes, _, _ = filter_images_pass(full_notes, out_path.parent, lectures, client)
+    full_notes, _, _ = filter_images_pass(full_notes, out_path.parent, lectures)
 
     out_path.write_text(full_notes, encoding="utf-8")
     tqdm.write(f"\n  Merged → {out_path}  ({len(full_notes):,} chars)")
@@ -941,11 +1099,8 @@ def generate_course_notes(
     out_path: Path,
     detail: int = DETAIL_LEVEL,
     fmt: str = OUTPUT_FORMAT,
-    client=None,
     force: bool = False,
 ) -> tuple[Path, dict]:
-    if client is None:
-        client = _get_client()
 
     out_dir = out_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -975,7 +1130,6 @@ def generate_course_notes(
         all_slides.extend(ld.slides)
         all_compact.extend(ld.compact_slides)
         generate_lecture(
-            client=client,
             lec_num=ld.num,
             lec_title=ld.title,
             course_name=course_name,
@@ -997,7 +1151,6 @@ def generate_course_notes(
         lectures=lectures,
         sections_dir=sections_dir,
         out_path=out_path,
-        client=client,
         all_slides=all_slides,
         all_compact=all_compact,
     )
@@ -1012,7 +1165,6 @@ def generate_with_iteration(
     fmt: str = OUTPUT_FORMAT,
     max_rounds: int = 3,
 ) -> Path:
-    client     = _get_client()
     detail     = DETAIL_LEVEL
     best_path  = out_path
     best_score = 0.0
@@ -1024,7 +1176,7 @@ def generate_with_iteration(
 
         path, scores = generate_course_notes(
             course_name, lectures, out_path,
-            detail=detail, fmt=fmt, client=client,
+            detail=detail, fmt=fmt,
             force=(rnd > 1),   # re-generate sections on subsequent rounds
         )
         overall = scores["overall"]
@@ -1175,11 +1327,10 @@ def main() -> None:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             for ld in lectures:
                 ld.load(out_path.parent)
-            client = _get_client()
             all_slides  = [s for ld in lectures for s in ld.slides]
             all_compact = [c for ld in lectures for c in ld.compact_slides]
             merge_sections(course_name, lectures, sections_dir, out_path,
-                           client, all_slides, all_compact)
+                           all_slides, all_compact)
             return
 
         if args.iterate:

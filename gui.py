@@ -99,17 +99,23 @@ def _read_constant(script_key: str, name: str) -> str:
 
 
 def _write_constant(script_key: str, name: str, new_display_val: str) -> bool:
-    """Write a constant back to its source file, preserving the original quote style."""
+    """Write a constant back to its source file with the correct Python literal type."""
     path = SCRIPTS[script_key]
     try:
         src = path.read_text(errors="ignore")
 
         def _replacer(m: re.Match) -> str:
-            old_raw = m.group(2).lstrip()
-            # Re-quote if original was a string literal
-            if old_raw.startswith(('"', "'")):
-                return m.group(1) + f'"{new_display_val}"'
-            return m.group(1) + new_display_val
+            # None keyword → bare None
+            if new_display_val == "None":
+                return m.group(1) + "None"
+            # Numeric → bare (int or float)
+            try:
+                float(new_display_val)
+                return m.group(1) + new_display_val
+            except ValueError:
+                pass
+            # String → always quoted
+            return m.group(1) + f'"{new_display_val}"'
 
         new_src, n = re.subn(
             rf'^({name}\s*=\s*)([^\n#]+)',
@@ -976,11 +982,70 @@ def build_settings(page: ft.Page) -> ft.Column:
         page.snack_bar.open = True
         page.update()
 
+    def _key_row(label: str, tf: ft.TextField, on_save) -> ft.Row:
+        return ft.Row(controls=[
+            ft.Text(label, size=12, color=ft.Colors.WHITE, width=140),
+            tf,
+            ft.FilledButton("Save", icon=ft.Icons.SAVE_OUTLINED,
+                            on_click=on_save, style=ft.ButtonStyle(
+                                bgcolor=C_PRIMARY, color=ft.Colors.BLACK)),
+        ], spacing=8)
+
+    # ── Connection settings (config.json) ────────────────────────────────────
+
+    config_file = PROJECT_DIR / "config.json"
+
+    def _load_config() -> dict:
+        return json.load(open(config_file)) if config_file.exists() else {}
+
+    def _save_config(key: str, value: str) -> None:
+        cfg = _load_config()
+        cfg[key] = value
+        with open(config_file, "w") as f:
+            json.dump(cfg, f, indent=2)
+
+    _cfg = _load_config()
+    tf_canvas_url = ft.TextField(
+        value=_cfg.get("CANVAS_URL", ""),
+        hint_text="https://canvas.yourschool.edu", expand=True, dense=True,
+        bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12,
+    )
+    tf_panopto = ft.TextField(
+        value=_cfg.get("PANOPTO_HOST", ""),
+        hint_text="mediaweb.ap.panopto.com", expand=True, dense=True,
+        bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12,
+    )
+
+    def _save_canvas_url(_):
+        try:
+            _save_config("CANVAS_URL", tf_canvas_url.value.strip())
+            _snack("Canvas URL saved.")
+        except Exception as e:
+            _snack(f"Error: {e}", ok=False)
+
+    def _save_panopto(_):
+        try:
+            _save_config("PANOPTO_HOST", tf_panopto.value.strip())
+            _snack("Panopto host saved.")
+        except Exception as e:
+            _snack(f"Error: {e}", ok=False)
+
+    conn_card = _card(ft.Column(controls=[
+        ft.Text("Connection", size=13,
+                weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+        ft.Text("Saved to config.json in the project directory.",
+                size=11, color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
+        ft.Container(height=4),
+        _key_row("Canvas URL",    tf_canvas_url, _save_canvas_url),
+        _key_row("Panopto Host",  tf_panopto,    _save_panopto),
+    ], spacing=10))
+
     # ── API Keys ──────────────────────────────────────────────────────────────
 
     canvas_file    = PROJECT_DIR / "canvas_token.txt"
     openai_file    = PROJECT_DIR / "openai_api.txt"
     anthropic_file = PROJECT_DIR / "anthropic_key.txt"
+    gemini_file    = PROJECT_DIR / "gemini_api.txt"
 
     tf_canvas    = ft.TextField(
         value=canvas_file.read_text().strip() if canvas_file.exists() else "",
@@ -998,6 +1063,12 @@ def build_settings(page: ft.Page) -> ft.Column:
         value=anthropic_file.read_text().strip() if anthropic_file.exists() else "",
         password=True, can_reveal_password=True,
         hint_text="sk-ant-…  (no default)", expand=True, dense=True,
+        bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12,
+    )
+    tf_gemini    = ft.TextField(
+        value=gemini_file.read_text().strip() if gemini_file.exists() else "",
+        password=True, can_reveal_password=True,
+        hint_text="AIza…  (Google AI Studio key, no default)", expand=True, dense=True,
         bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12,
     )
 
@@ -1022,14 +1093,12 @@ def build_settings(page: ft.Page) -> ft.Column:
         except Exception as e:
             _snack(f"Error: {e}", ok=False)
 
-    def _key_row(label: str, tf: ft.TextField, on_save) -> ft.Row:
-        return ft.Row(controls=[
-            ft.Text(label, size=12, color=ft.Colors.WHITE, width=140),
-            tf,
-            ft.FilledButton("Save", icon=ft.Icons.SAVE_OUTLINED,
-                            on_click=on_save, style=ft.ButtonStyle(
-                                bgcolor=C_PRIMARY, color=ft.Colors.BLACK)),
-        ], spacing=8)
+    def _save_gemini(_):
+        try:
+            gemini_file.write_text(tf_gemini.value.strip())
+            _snack("Gemini key saved to gemini_api.txt.")
+        except Exception as e:
+            _snack(f"Error: {e}", ok=False)
 
     keys_card = _card(ft.Column(controls=[
         ft.Text("API Keys & Credentials", size=13,
@@ -1040,6 +1109,7 @@ def build_settings(page: ft.Page) -> ft.Column:
         _key_row("Canvas Token",     tf_canvas,    _save_canvas),
         _key_row("OpenAI API Key",   tf_openai,    _save_openai),
         _key_row("Anthropic API Key",tf_anthropic, _save_anthropic),
+        _key_row("Gemini API Key",   tf_gemini,    _save_gemini),
         ft.Row(controls=[
             ft.Text("Project dir", size=11,
                     color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
@@ -1056,55 +1126,143 @@ def build_settings(page: ft.Page) -> ft.Column:
         "generate":   ft.Colors.PURPLE_200,
     }
 
+    # options: list of (display_label, stored_value) pairs, or None for free text
     CONSTANTS = [
-        #  script_key      name                   description              default
-        ("transcribe", "WHISPER_MODEL_SIZE",  "Whisper model variant",  "large-v3"),
-        ("transcribe", "WHISPER_LANGUAGE",    "Language (None = auto)", "None"),
-        ("align",      "EMBED_MODEL",         "Sentence-transformer",   "all-mpnet-base-v2"),
-        ("align",      "CONTEXT_SEC",         "Context window (s)",     "30"),
-        ("align",      "OFF_SLIDE_THRESHOLD", "Off-slide cosine cutoff","0.28"),
-        ("align",      "PRIOR_SIGMA",         "Temporal prior σ",       "5"),
-        ("generate",   "NOTE_MODEL",          "Note generation LLM",    "gpt-5.1"),
-        ("generate",   "VERIFY_MODEL",        "Verification LLM",       "gpt-4.1-mini"),
-        ("generate",   "DETAIL_LEVEL",        "Default detail level",   "8"),
-        ("generate",   "CHAPTER_SIZE",        "Slides per GPT call",    "15"),
-        ("generate",   "QUALITY_TARGET",      "Self-score target",      "8.0"),
+        #  script       name                   desc                     default           options
+        ("transcribe", "WHISPER_MODEL_SIZE", "Whisper model variant", "large-v3", [
+            ("tiny",             "tiny"),
+            ("base",             "base"),
+            ("small",            "small"),
+            ("medium",           "medium"),
+            ("large",            "large"),
+            ("large-v2",         "large-v2"),
+            ("large-v3",         "large-v3"),
+            ("large-v3-turbo",   "large-v3-turbo"),
+            ("distil-large-v3",  "distil-large-v3"),
+        ]),
+        ("transcribe", "WHISPER_LANGUAGE", "Transcription language", "None", [
+            ("Auto-detect",  "None"),
+            ("English",      "en"),
+            ("Chinese",      "zh"),
+            ("Japanese",     "ja"),
+            ("Korean",       "ko"),
+            ("French",       "fr"),
+            ("German",       "de"),
+            ("Spanish",      "es"),
+        ]),
+        ("align", "EMBED_MODEL", "Sentence-transformer model", "all-mpnet-base-v2", [
+            ("all-mpnet-base-v2 (best quality)",           "all-mpnet-base-v2"),
+            ("all-MiniLM-L12-v2 (balanced)",               "all-MiniLM-L12-v2"),
+            ("all-MiniLM-L6-v2 (fast)",                    "all-MiniLM-L6-v2"),
+            ("paraphrase-multilingual-mpnet-base-v2",      "paraphrase-multilingual-mpnet-base-v2"),
+        ]),
+        ("align",      "CONTEXT_SEC",         "Context window (s)",      "30",   None),
+        ("align",      "OFF_SLIDE_THRESHOLD",  "Off-slide cosine cutoff", "0.28", None),
+        ("align",      "PRIOR_SIGMA",          "Temporal prior σ",        "5",    None),
+        ("generate", "NOTE_LANGUAGE", "Note language", "en", [
+            ("English",         "en"),
+            ("Chinese (中文)",  "zh"),
+        ]),
+        ("generate", "NOTE_MODEL", "Note generation LLM", "gpt-5.1", [
+            # OpenAI
+            ("gpt-5.1",              "gpt-5.1"),
+            ("gpt-5.2",              "gpt-5.2"),
+            ("gpt-5.3",              "gpt-5.3"),
+            ("gpt-5.4",              "gpt-5.4"),
+            ("gpt-4.1",              "gpt-4.1"),
+            ("gpt-4.1-mini",         "gpt-4.1-mini"),
+            ("o3",                   "o3"),
+            ("o1",                   "o1"),
+            # Gemini
+            ("Gemini 2.5 Pro",       "gemini-2.5-pro"),
+            ("Gemini 2.5 Flash",     "gemini-2.5-flash"),
+            ("Gemini 2.0 Flash",     "gemini-2.0-flash"),
+            ("Gemini 1.5 Pro",       "gemini-1.5-pro"),
+            # Anthropic
+            ("Claude Opus 4.6",      "claude-opus-4-6"),
+            ("Claude Sonnet 4.6",    "claude-sonnet-4-6"),
+            ("Claude Sonnet 4.5",    "claude-sonnet-4-5"),
+            ("Claude Sonnet 3.5",    "claude-3-5-sonnet-20241022"),
+            ("Claude Haiku 4.5",     "claude-haiku-4-5-20251001"),
+        ]),
+        ("generate", "VERIFY_MODEL", "Verification LLM", "gpt-4.1-mini", [
+            # OpenAI
+            ("gpt-4.1-mini",         "gpt-4.1-mini"),
+            ("gpt-4.1",              "gpt-4.1"),
+            ("gpt-5.1",              "gpt-5.1"),
+            # Gemini
+            ("Gemini 2.5 Flash",     "gemini-2.5-flash"),
+            ("Gemini 2.0 Flash",     "gemini-2.0-flash"),
+            # Anthropic
+            ("Claude Haiku 4.5",     "claude-haiku-4-5-20251001"),
+            ("Claude Sonnet 3.5",    "claude-3-5-sonnet-20241022"),
+            ("Claude Sonnet 4.5",    "claude-sonnet-4-5"),
+        ]),
+        ("generate",   "DETAIL_LEVEL",         "Default detail level",    "8",    None),
+        ("generate",   "CHAPTER_SIZE",          "Slides per GPT call",     "15",   None),
+        ("generate",   "QUALITY_TARGET",        "Self-score target",       "8.0",  None),
     ]
 
-    def _const_row(script: str, name: str, desc: str, default: str) -> ft.Row:
-        cur = _read_constant(script, name)
-        tf  = ft.TextField(
-            value=cur, expand=True, dense=True,
-            bgcolor=C_OUTPUT_BG, border_color=_SCRIPT_COLORS.get(script, C_PRIMARY),
-            text_size=12, content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
-        )
+    def _const_row(script: str, name: str, desc: str, default: str,
+                   options: list[tuple[str, str]] | None = None) -> ft.Row:
+        cur    = _read_constant(script, name)
+        accent = _SCRIPT_COLORS.get(script, C_PRIMARY)
 
-        def _save(_):
-            if _write_constant(script, name, tf.value.strip()):
-                _snack(f"{name} saved.")
-            else:
-                _snack(f"Failed to save {name}.", ok=False)
+        if options:
+            ctrl = ft.Dropdown(
+                value=cur if any(v == cur for _, v in options) else default,
+                options=[ft.dropdown.Option(key=val, text=label) for label, val in options],
+                expand=True, dense=True,
+                bgcolor=C_OUTPUT_BG, border_color=accent, text_size=12,
+                content_padding=ft.padding.symmetric(horizontal=8, vertical=4),
+            )
 
-        def _reset(_):
-            tf.value = default
-            tf.update()
-            if _write_constant(script, name, default):
-                _snack(f"{name} reset to default ({default}).")
-            else:
-                _snack(f"Failed to reset {name}.", ok=False)
+            def _save(_, c=ctrl, s=script, n=name):
+                if _write_constant(s, n, c.value or default):
+                    _snack(f"{n} saved.")
+                else:
+                    _snack(f"Failed to save {n}.", ok=False)
+
+            def _reset(_, c=ctrl, s=script, n=name, d=default):
+                c.value = d
+                c.update()
+                if _write_constant(s, n, d):
+                    _snack(f"{n} reset to default.")
+                else:
+                    _snack(f"Failed to reset {n}.", ok=False)
+
+        else:
+            ctrl = ft.TextField(
+                value=cur, expand=True, dense=True,
+                bgcolor=C_OUTPUT_BG, border_color=accent,
+                text_size=12, content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
+            )
+
+            def _save(_, c=ctrl, s=script, n=name):
+                if _write_constant(s, n, c.value.strip()):
+                    _snack(f"{n} saved.")
+                else:
+                    _snack(f"Failed to save {n}.", ok=False)
+
+            def _reset(_, c=ctrl, s=script, n=name, d=default):
+                c.value = d
+                c.update()
+                if _write_constant(s, n, d):
+                    _snack(f"{n} reset to default ({d}).")
+                else:
+                    _snack(f"Failed to reset {n}.", ok=False)
 
         return ft.Row(controls=[
             ft.Container(
-                ft.Text(script, size=10, color=_SCRIPT_COLORS.get(script, C_PRIMARY),
-                        weight=ft.FontWeight.BOLD),
+                ft.Text(script, size=10, color=accent, weight=ft.FontWeight.BOLD),
                 width=74, padding=ft.padding.symmetric(horizontal=4, vertical=2),
                 border_radius=4,
-                bgcolor=ft.Colors.with_opacity(0.12, _SCRIPT_COLORS.get(script, C_PRIMARY)),
+                bgcolor=ft.Colors.with_opacity(0.12, accent),
             ),
             ft.Text(desc, size=12, color=ft.Colors.WHITE, width=190),
             ft.Text(name, size=11, color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE),
                     width=160, italic=True),
-            tf,
+            ctrl,
             ft.FilledButton(
                 "Save", icon=ft.Icons.SAVE_OUTLINED, on_click=_save,
                 style=ft.ButtonStyle(bgcolor=C_PRIMARY, color=ft.Colors.BLACK),
@@ -1113,7 +1271,7 @@ def build_settings(page: ft.Page) -> ft.Column:
                 "Default", on_click=_reset,
                 style=ft.ButtonStyle(side=ft.BorderSide(1, C_SECONDARY),
                                      color=C_SECONDARY),
-                tooltip=f"Reset to: {default}",
+                tooltip=f"Default: {default}",
             ),
         ], spacing=8)
 
@@ -1132,6 +1290,7 @@ def build_settings(page: ft.Page) -> ft.Column:
         controls=[
             ft.Column(controls=[
                 _section_title("Settings", ft.Icons.SETTINGS_OUTLINED),
+                conn_card,
                 keys_card,
                 const_card,
             ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True),
