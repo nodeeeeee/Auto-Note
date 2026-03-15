@@ -41,10 +41,10 @@ conda activate auto-note
 
 ### API keys
 
-| Key | Location |
-|-----|----------|
-| Canvas token | `canvas_token.txt` or `CANVAS_TOKEN` constant in `downloader.py` |
-| OpenAI key | `openai_api.txt` or `OPENAI_API_KEY` env var |
+| Key | Location | Source |
+|-----|----------|------|
+| Canvas token | `canvas_token.txt` or `CANVAS_TOKEN` constant in `downloader.py` | Canvas->settings |
+| OpenAI key | `openai_api.txt` or `OPENAI_API_KEY` env var | OpenAI API platform |
 
 ### Course IDs
 

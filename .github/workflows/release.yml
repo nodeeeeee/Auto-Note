@@ -24,7 +24,7 @@ jobs:
             platform: windows
             artifact_name: AutoNote-windows-x86_64.zip
 
-          - os: macos-13          # Intel (x86_64)
+          - os: macos-12          # Intel (x86_64)
             platform: macos-intel
             artifact_name: AutoNote-macos-x86_64.zip
 
@@ -45,15 +45,16 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: requirements.txt
 
       # ── Install build-time dependencies ─────────────────────────────────────
-      # GUI + OpenAI client are bundled. The heavy ML stack (torch, faster-whisper,
-      # etc.) is NOT bundled; users run it in a separate Python environment.
+      # GUI + OpenAI + Anthropic clients are bundled. The heavy ML stack
+      # (torch, faster-whisper, etc.) is NOT bundled; users run it separately.
       # The app auto-falls back to OpenAI Whisper API when faster-whisper is absent.
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install flet pyinstaller openai httpx
+          pip install -r requirements.txt
 
       # ── Linux: install system libs required by flet/webkit ──────────────────
       - name: Install Linux system deps
