@@ -27,6 +27,7 @@ a = Analysis(
         "flet.fastapi",
         "flet_core",
         "flet_runtime",
+        "flet_desktop",
     ],
     hookspath=[],
     hooksconfig={},

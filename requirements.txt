@@ -1,4 +1,4 @@
-flet
+flet[desktop]
 pyinstaller
 openai
 httpx
