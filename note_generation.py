@@ -191,8 +191,14 @@ def _img_ref_pattern() -> re.Pattern:
     return re.compile(r"!\[Slide \d+\]\((images/L\d{2}(?:_F\d{2})?/slide_\d{3}\.png)\)")
 
 
-def _vision_keep(client, img_path: Path) -> bool:
-    """Ask GPT-4o-mini whether the slide image is worth including in notes."""
+def _vision_keep(client, img_path: Path, slide_text: str = "") -> bool:
+    """Ask GPT-4o-mini whether the slide image is worth including in notes.
+
+    Uses slide_text as context so the model can reason about whether the
+    visual structure actually explains the lecture content (e.g. a diagram
+    of a protocol stack/a picture of a biological structure) vs. being an unrelated administrative element
+    (e.g. a PollEv QR code, a course logo, a participation prompt).
+    """
     import base64
     import io
     if not img_path.exists():
@@ -210,32 +216,41 @@ def _vision_keep(client, img_path: Path) -> bool:
     except Exception:
         return True   # can't load image → default keep
 
-    _VISION_PROMPT = """\
+    context_block = (
+        f"\n\nSlide text (OCR):\n\"\"\"\n{slide_text[:400]}\n\"\"\""
+        if slide_text.strip() else ""
+    )
+
+    _VISION_PROMPT = f"""\
 You are a study-notes curator deciding whether a lecture slide image should be \
-embedded in written notes.
+embedded in written notes.{context_block}
 
-## KEEP if the slide contains ANY of the following visual elements:
-- Diagrams: system/architecture diagrams, component boxes connected by arrows
-- Flowcharts, state machines, decision trees, sequence/timing diagrams
-- Memory layouts, address-space maps, cache/pipeline stage illustrations
-- Graphs, plots, bar/line/pie charts, scatter plots showing data or trends
-- Tables with a meaningful grid structure (comparing options, showing relationships)
-- Mathematical formulas or derivations where spatial layout matters
-- Annotated screenshots, highlighted output, or callout arrows
-- Any figure where the shape, position, or spatial relationship between elements \
-carries meaning
+## TWO conditions must BOTH be true to KEEP an image:
 
-Mixed slides (text + diagram) should be KEPT if the diagram takes up a \
-significant portion of the slide or is the central focus.
+1. The slide contains a meaningful visual element:
+   - Diagrams: system/architecture diagrams, component boxes connected by arrows
+   - Flowcharts, state machines, decision trees, sequence/timing diagrams
+   - Memory layouts, address-space maps, cache/pipeline stage illustrations
+   - Graphs, plots, bar/line/pie charts, scatter plots showing data or trends
+   - Tables with a meaningful grid structure (comparing options, relationships)
+   - Mathematical formulas or derivations where spatial layout matters
+   - Annotated screenshots, highlighted output, or callout arrows
 
-## REMOVE only if the slide is PURELY or OVERWHELMINGLY words:
-- Slides consisting entirely of bullet-point or numbered text with NO diagram
-- Slides with only prose paragraphs or definitions
-- Code-only slides with no accompanying diagram or annotation \
-(code will be written as text in the notes)
+2. The visual element is RELEVANT to the lecture subject matter:
+   - The diagram, chart, or figure directly explains or illustrates a concept \
+being taught
+   - It is NOT an administrative or logistical element such as: polling/quiz \
+prompts (PollEv, Mentimeter, Kahoot QR codes), attendance check slides, \
+course schedule tables, "any questions?" slides, logos, or sponsor slides
+
+## REMOVE if either condition fails:
+- Pure text slides (bullet points, prose, definitions) with no diagram
+- Code-only slides (code will be reproduced as text in the notes)
 - Title slides, section dividers, agenda/outline, blank slides
+- Slides whose only visual is an unrelated administrative element \
+(QR code for a poll, login instructions, course info graphics)
 
-## Default: when uncertain, KEEP.
+## Default: when genuinely uncertain about relevance, KEEP.
 
 Reply with exactly one word: KEEP or REMOVE."""
 
@@ -307,8 +322,9 @@ def filter_images_pass(
             decisions[rel] = False
             continue
 
-        # ③ Vision API — KEEP only if dominant content is a visual element
-        decisions[rel] = _vision_keep(client, img_path)
+        # ③ Vision API — KEEP only if visual AND relevant to lecture content
+        slide_text = slide.text if slide else ""
+        decisions[rel] = _vision_keep(client, img_path, slide_text)
 
     kept    = sum(1 for v in decisions.values() if v)
     removed = sum(1 for v in decisions.values() if not v)

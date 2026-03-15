@@ -97,6 +97,31 @@ def _read_constant(script_key: str, name: str) -> str:
         return re.sub(r"\s*#.*$", "", m.group(1)).strip().strip('"')
     return "?"
 
+
+def _write_constant(script_key: str, name: str, new_display_val: str) -> bool:
+    """Write a constant back to its source file, preserving the original quote style."""
+    path = SCRIPTS[script_key]
+    try:
+        src = path.read_text(errors="ignore")
+
+        def _replacer(m: re.Match) -> str:
+            old_raw = m.group(2).lstrip()
+            # Re-quote if original was a string literal
+            if old_raw.startswith(('"', "'")):
+                return m.group(1) + f'"{new_display_val}"'
+            return m.group(1) + new_display_val
+
+        new_src, n = re.subn(
+            rf'^({name}\s*=\s*)([^\n#]+)',
+            _replacer, src, count=1, flags=re.MULTILINE,
+        )
+        if n == 0:
+            return False
+        path.write_text(new_src)
+        return True
+    except Exception:
+        return False
+
 # ── Shared state ──────────────────────────────────────────────────────────────
 
 class AppState:
@@ -728,8 +753,9 @@ def build_transcribe(page: ft.Page, console: OutputConsole) -> ft.Column:
                         color=ft.Colors.with_opacity(0.7, ft.Colors.WHITE)),
             ], spacing=8),
             ft.Text(
-                "Runs faster-whisper on GPU. Processes all videos in manifest.json "
-                "that lack a caption. Optionally specify a single video path.",
+                "Auto-selects backend: uses faster-whisper on GPU if available, "
+                "otherwise falls back to OpenAI Whisper API (requires openai_api.txt). "
+                "Processes all videos in manifest.json that lack a caption.",
                 size=12,
                 color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE),
             ),
@@ -940,93 +966,174 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
 # ── Page: Settings ────────────────────────────────────────────────────────────
 
 def build_settings(page: ft.Page) -> ft.Column:
-    dl_src     = SCRIPTS["downloader"].read_text(errors="ignore")
-    token_m    = re.search(r'CANVAS_TOKEN\s*=\s*"([^"]+)"', dl_src)
-    token_prev = (token_m.group(1)[:12] + "…") if token_m else "not found"
 
-    openai_file = PROJECT_DIR / "openai_api.txt"
-    openai_env  = os.environ.get("OPENAI_API_KEY", "")
-    openai_src  = ("openai_api.txt  ✓" if openai_file.exists()
-                   else "OPENAI_API_KEY env  ✓" if openai_env
-                   else "not found")
+    def _snack(msg: str, ok: bool = True) -> None:
+        page.snack_bar = ft.SnackBar(
+            ft.Text(msg, color=ft.Colors.BLACK),
+            bgcolor=C_SUCCESS if ok else C_ERROR,
+            duration=2000,
+        )
+        page.snack_bar.open = True
+        page.update()
 
-    def _cfg_row(key: str, val: str, ok: bool = True) -> ft.DataRow:
-        return ft.DataRow(cells=[
-            ft.DataCell(ft.Text(key, size=12, color=C_PRIMARY)),
-            ft.DataCell(ft.Text(val, size=12,
-                                color=C_SUCCESS if ok else C_ERROR,
-                                selectable=True)),
-        ])
+    # ── API Keys ──────────────────────────────────────────────────────────────
 
-    cfg_table = ft.DataTable(
-        columns=[
-            ft.DataColumn(ft.Text("Key",   color=C_PRIMARY, size=12)),
-            ft.DataColumn(ft.Text("Value", color=C_PRIMARY, size=12)),
-        ],
-        rows=[
-            _cfg_row("Canvas token", token_prev),
-            _cfg_row("OpenAI key",   openai_src,
-                     ok=openai_file.exists() or bool(openai_env)),
-            _cfg_row("Project dir",  str(PROJECT_DIR)),
-            _cfg_row("Python",       PYTHON),
-        ],
-        data_row_max_height=36,
+    canvas_file    = PROJECT_DIR / "canvas_token.txt"
+    openai_file    = PROJECT_DIR / "openai_api.txt"
+    anthropic_file = PROJECT_DIR / "anthropic_key.txt"
+
+    tf_canvas    = ft.TextField(
+        value=canvas_file.read_text().strip() if canvas_file.exists() else "",
+        password=True, can_reveal_password=True,
+        hint_text="Canvas API token", expand=True, dense=True,
+        bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12,
     )
+    tf_openai    = ft.TextField(
+        value=openai_file.read_text().strip() if openai_file.exists() else "",
+        password=True, can_reveal_password=True,
+        hint_text="sk-…  (no default)", expand=True, dense=True,
+        bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12,
+    )
+    tf_anthropic = ft.TextField(
+        value=anthropic_file.read_text().strip() if anthropic_file.exists() else "",
+        password=True, can_reveal_password=True,
+        hint_text="sk-ant-…  (no default)", expand=True, dense=True,
+        bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12,
+    )
+
+    def _save_canvas(_):
+        try:
+            canvas_file.write_text(tf_canvas.value.strip())
+            _snack("Canvas token saved to canvas_token.txt.")
+        except Exception as e:
+            _snack(f"Error: {e}", ok=False)
+
+    def _save_openai(_):
+        try:
+            openai_file.write_text(tf_openai.value.strip())
+            _snack("OpenAI key saved to openai_api.txt.")
+        except Exception as e:
+            _snack(f"Error: {e}", ok=False)
+
+    def _save_anthropic(_):
+        try:
+            anthropic_file.write_text(tf_anthropic.value.strip())
+            _snack("Anthropic key saved to anthropic_key.txt.")
+        except Exception as e:
+            _snack(f"Error: {e}", ok=False)
+
+    def _key_row(label: str, tf: ft.TextField, on_save) -> ft.Row:
+        return ft.Row(controls=[
+            ft.Text(label, size=12, color=ft.Colors.WHITE, width=140),
+            tf,
+            ft.FilledButton("Save", icon=ft.Icons.SAVE_OUTLINED,
+                            on_click=on_save, style=ft.ButtonStyle(
+                                bgcolor=C_PRIMARY, color=ft.Colors.BLACK)),
+        ], spacing=8)
+
+    keys_card = _card(ft.Column(controls=[
+        ft.Text("API Keys & Credentials", size=13,
+                weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+        ft.Text("Keys are stored in plaintext files in the project directory.",
+                size=11, color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
+        ft.Container(height=4),
+        _key_row("Canvas Token",     tf_canvas,    _save_canvas),
+        _key_row("OpenAI API Key",   tf_openai,    _save_openai),
+        _key_row("Anthropic API Key",tf_anthropic, _save_anthropic),
+        ft.Row(controls=[
+            ft.Text("Project dir", size=11,
+                    color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
+            ft.Text(str(PROJECT_DIR), size=11, selectable=True,
+                    color=ft.Colors.with_opacity(0.7, ft.Colors.WHITE)),
+        ], spacing=8),
+    ], spacing=10))
+
+    # ── Tunable Constants ─────────────────────────────────────────────────────
+
+    _SCRIPT_COLORS = {
+        "transcribe": ft.Colors.CYAN_300,
+        "align":      ft.Colors.AMBER_300,
+        "generate":   ft.Colors.PURPLE_200,
+    }
 
     CONSTANTS = [
-        ("transcribe", "WHISPER_MODEL_SIZE",  "Whisper variant"),
-        ("transcribe", "WHISPER_LANGUAGE",    "Language (None=auto)"),
-        ("align",      "EMBED_MODEL",         "Sentence-transformer"),
-        ("align",      "CONTEXT_SEC",         "Context window (s)"),
-        ("align",      "OFF_SLIDE_THRESHOLD", "Off-slide threshold"),
-        ("align",      "PRIOR_SIGMA",         "Temporal prior width"),
-        ("generate",   "NOTE_MODEL",          "Note generation LLM"),
-        ("generate",   "VERIFY_MODEL",        "Verification LLM"),
-        ("generate",   "DETAIL_LEVEL",        "Default detail level"),
-        ("generate",   "CHAPTER_SIZE",        "Slides per GPT call"),
-        ("generate",   "QUALITY_TARGET",      "Self-score target"),
+        #  script_key      name                   description              default
+        ("transcribe", "WHISPER_MODEL_SIZE",  "Whisper model variant",  "large-v3"),
+        ("transcribe", "WHISPER_LANGUAGE",    "Language (None = auto)", "None"),
+        ("align",      "EMBED_MODEL",         "Sentence-transformer",   "all-mpnet-base-v2"),
+        ("align",      "CONTEXT_SEC",         "Context window (s)",     "30"),
+        ("align",      "OFF_SLIDE_THRESHOLD", "Off-slide cosine cutoff","0.28"),
+        ("align",      "PRIOR_SIGMA",         "Temporal prior σ",       "5"),
+        ("generate",   "NOTE_MODEL",          "Note generation LLM",    "gpt-5.1"),
+        ("generate",   "VERIFY_MODEL",        "Verification LLM",       "gpt-4.1-mini"),
+        ("generate",   "DETAIL_LEVEL",        "Default detail level",   "8"),
+        ("generate",   "CHAPTER_SIZE",        "Slides per GPT call",    "15"),
+        ("generate",   "QUALITY_TARGET",      "Self-score target",      "8.0"),
     ]
-    const_rows = [
-        ft.DataRow(cells=[
-            ft.DataCell(ft.Text(s,  size=11,
-                                color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE))),
-            ft.DataCell(ft.Text(n,  size=11, color=C_PRIMARY, selectable=True)),
-            ft.DataCell(ft.Text(_read_constant(s, n), size=11,
-                                color=ft.Colors.WHITE, selectable=True)),
-            ft.DataCell(ft.Text(d,  size=11,
-                                color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE))),
-        ])
-        for s, n, d in CONSTANTS
-    ]
-    const_table = ft.DataTable(
-        columns=[
-            ft.DataColumn(ft.Text("Script",      color=C_PRIMARY, size=11)),
-            ft.DataColumn(ft.Text("Constant",    color=C_PRIMARY, size=11)),
-            ft.DataColumn(ft.Text("Value",       color=C_PRIMARY, size=11)),
-            ft.DataColumn(ft.Text("Description", color=C_PRIMARY, size=11)),
-        ],
-        rows=const_rows,
-        data_row_max_height=32,
-    )
+
+    def _const_row(script: str, name: str, desc: str, default: str) -> ft.Row:
+        cur = _read_constant(script, name)
+        tf  = ft.TextField(
+            value=cur, expand=True, dense=True,
+            bgcolor=C_OUTPUT_BG, border_color=_SCRIPT_COLORS.get(script, C_PRIMARY),
+            text_size=12, content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
+        )
+
+        def _save(_):
+            if _write_constant(script, name, tf.value.strip()):
+                _snack(f"{name} saved.")
+            else:
+                _snack(f"Failed to save {name}.", ok=False)
+
+        def _reset(_):
+            tf.value = default
+            tf.update()
+            if _write_constant(script, name, default):
+                _snack(f"{name} reset to default ({default}).")
+            else:
+                _snack(f"Failed to reset {name}.", ok=False)
+
+        return ft.Row(controls=[
+            ft.Container(
+                ft.Text(script, size=10, color=_SCRIPT_COLORS.get(script, C_PRIMARY),
+                        weight=ft.FontWeight.BOLD),
+                width=74, padding=ft.padding.symmetric(horizontal=4, vertical=2),
+                border_radius=4,
+                bgcolor=ft.Colors.with_opacity(0.12, _SCRIPT_COLORS.get(script, C_PRIMARY)),
+            ),
+            ft.Text(desc, size=12, color=ft.Colors.WHITE, width=190),
+            ft.Text(name, size=11, color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE),
+                    width=160, italic=True),
+            tf,
+            ft.FilledButton(
+                "Save", icon=ft.Icons.SAVE_OUTLINED, on_click=_save,
+                style=ft.ButtonStyle(bgcolor=C_PRIMARY, color=ft.Colors.BLACK),
+            ),
+            ft.OutlinedButton(
+                "Default", on_click=_reset,
+                style=ft.ButtonStyle(side=ft.BorderSide(1, C_SECONDARY),
+                                     color=C_SECONDARY),
+                tooltip=f"Reset to: {default}",
+            ),
+        ], spacing=8)
+
+    const_rows = [_const_row(*c) for c in CONSTANTS]
+
+    const_card = _card(ft.Column(controls=[
+        ft.Text("Tunable Constants", size=13,
+                weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+        ft.Text("Changes are written directly to the corresponding script file.",
+                size=11, color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
+        ft.Divider(height=12, color=ft.Colors.with_opacity(0.15, ft.Colors.WHITE)),
+        *const_rows,
+    ], spacing=10))
 
     return ft.Column(
         controls=[
             ft.Column(controls=[
-                _section_title("Settings & Constants", ft.Icons.SETTINGS_OUTLINED),
-                _card(ft.Column(controls=[
-                    ft.Text("Configuration", size=13,
-                            weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
-                    cfg_table,
-                ], spacing=8)),
-                _card(ft.Column(controls=[
-                    ft.Text("Tunable Constants", size=13,
-                            weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
-                    ft.Text("Edit the constant in the corresponding script to change it.",
-                            size=11,
-                            color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
-                    ft.Container(height=4),
-                    const_table,
-                ], spacing=8)),
+                _section_title("Settings", ft.Icons.SETTINGS_OUTLINED),
+                keys_card,
+                const_card,
             ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True),
         ],
         expand=True,

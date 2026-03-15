@@ -35,10 +35,15 @@ from tqdm import tqdm
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-CANVAS_URL    = "https://canvas.nus.edu.sg"
-CANVAS_TOKEN  = "21450~VhMGPzTKzT9wABF3VF76k8YE9LKUwfL93nU2LMc3xcfKPMhTkHJYaG3vZ34mfUke"
-PANOPTO_HOST  = "mediaweb.ap.panopto.com"
 PROJECT_DIR   = Path(__file__).parent
+CANVAS_URL    = "https://canvas.nus.edu.sg"
+_canvas_token_file = PROJECT_DIR / "canvas_token.txt"
+CANVAS_TOKEN  = (
+    _canvas_token_file.read_text().strip()
+    if _canvas_token_file.exists() else
+    os.environ.get("CANVAS_TOKEN", "")
+)
+PANOPTO_HOST  = "mediaweb.ap.panopto.com"
 MANIFEST_FILE = PROJECT_DIR / "manifest.json"
 SIZE_LIMIT    = 1 * 1024 ** 3   # 1 GB
 

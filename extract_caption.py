@@ -1,8 +1,8 @@
 """
 Caption Extraction Pipeline
 For each downloaded video:
-  1. Transcribe directly with faster-whisper large-v3 (GPU)
-     faster-whisper accepts video files natively via ffmpeg decoding.
+  1. Transcribe with faster-whisper large-v3 (GPU) if available,
+     otherwise fall back to OpenAI Whisper API (whisper-1).
   2. Save word-level timestamped JSON to [course_id]/captions/
 
 Directory layout:
@@ -16,10 +16,11 @@ Usage:
 
 import gc
 import json
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
-
-import torch
 
 PROJECT_DIR   = Path(__file__).parent
 MANIFEST_FILE = PROJECT_DIR / "manifest.json"
@@ -30,15 +31,42 @@ WHISPER_MODEL_SIZE = "large-v3"
 WHISPER_BEAM_SIZE  = 5
 WHISPER_LANGUAGE   = None       # None = auto-detect
 
+# Audio chunk size for OpenAI API (minutes). 60 min @ 32 kbps mono ≈ 14 MB,
+# well under the 25 MB per-request limit.
+_API_CHUNK_MINUTES = 60
 
-# ── GPU enforcement ───────────────────────────────────────────────────────────
+# OpenAI API key: read from openai_api.txt or OPENAI_API_KEY env var
+_openai_key_file = PROJECT_DIR / "openai_api.txt"
+_OPENAI_API_KEY  = (
+    _openai_key_file.read_text().strip()
+    if _openai_key_file.exists() else
+    os.environ.get("OPENAI_API_KEY", "")
+)
+
+# Full language-name → ISO 639-1 code (OpenAI returns full names)
+_LANG_NAMES = {
+    "afrikaans": "af", "arabic": "ar", "armenian": "hy", "azerbaijani": "az",
+    "belarusian": "be", "bosnian": "bs", "bulgarian": "bg", "catalan": "ca",
+    "chinese": "zh", "croatian": "hr", "czech": "cs", "danish": "da",
+    "dutch": "nl", "english": "en", "estonian": "et", "finnish": "fi",
+    "french": "fr", "galician": "gl", "german": "de", "greek": "el",
+    "hebrew": "he", "hindi": "hi", "hungarian": "hu", "icelandic": "is",
+    "indonesian": "id", "italian": "it", "japanese": "ja", "kannada": "kn",
+    "kazakh": "kk", "korean": "ko", "latvian": "lv", "lithuanian": "lt",
+    "macedonian": "mk", "malay": "ms", "marathi": "mr", "maori": "mi",
+    "nepali": "ne", "norwegian": "no", "persian": "fa", "polish": "pl",
+    "portuguese": "pt", "romanian": "ro", "russian": "ru", "serbian": "sr",
+    "slovak": "sk", "slovenian": "sl", "spanish": "es", "swahili": "sw",
+    "swedish": "sv", "tagalog": "tl", "tamil": "ta", "thai": "th",
+    "turkish": "tr", "ukrainian": "uk", "urdu": "ur", "vietnamese": "vi",
+    "welsh": "cy",
+}
+
+
+# ── GPU helpers (only used by local backend) ──────────────────────────────────
 
 def require_gpu() -> None:
-    """
-    Called once at program startup.
-    Raises RuntimeError if no CUDA GPU is available so the pipeline never
-    falls back to CPU silently.
-    """
+    import torch
     if not torch.cuda.is_available():
         raise RuntimeError(
             "No CUDA GPU detected. This pipeline requires a CUDA-capable GPU.\n"
@@ -51,7 +79,7 @@ def require_gpu() -> None:
 
 
 def free_gpu() -> None:
-    """Release all unreferenced CUDA tensors and return VRAM to the pool."""
+    import torch
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -70,13 +98,146 @@ def save_manifest(manifest: dict) -> None:
         json.dump(manifest, f, indent=2)
 
 
-# ── Transcribe ────────────────────────────────────────────────────────────────
+# ── OpenAI API helpers ────────────────────────────────────────────────────────
 
-def transcribe(video_path: Path, caption_path: Path) -> bool:
+def _video_duration(video_path: Path) -> float:
+    """Return video duration in seconds via ffprobe."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-print_format", "json",
+         "-show_format", str(video_path)],
+        capture_output=True, text=True, check=True,
+    )
+    return float(json.loads(result.stdout)["format"]["duration"])
+
+
+def _extract_audio(video_path: Path, out_path: Path,
+                   start: float = 0.0, duration: float | None = None) -> None:
+    """Extract a low-bitrate mono mp3 clip suitable for the OpenAI API."""
+    cmd = ["ffmpeg", "-y", "-i", str(video_path)]
+    if start > 0:
+        cmd += ["-ss", str(start)]
+    if duration is not None:
+        cmd += ["-t", str(duration)]
+    cmd += ["-vn", "-ar", "16000", "-ac", "1", "-b:a", "32k", str(out_path)]
+    subprocess.run(cmd, capture_output=True, check=True)
+
+
+def _api_segments_to_schema(api_segs: list, time_offset: float = 0.0) -> list:
+    """Convert OpenAI verbose_json segments to our internal schema."""
+    out = []
+    for seg in api_segs:
+        words = []
+        for w in (seg.get("words") or []):
+            words.append({
+                "word":  w["word"],
+                "start": round(w["start"] + time_offset, 3),
+                "end":   round(w["end"]   + time_offset, 3),
+                "prob":  round(w.get("probability", 1.0), 3),
+            })
+        out.append({
+            "id":    seg["id"],
+            "start": round(seg["start"] + time_offset, 3),
+            "end":   round(seg["end"]   + time_offset, 3),
+            "text":  seg["text"].strip(),
+            "words": words,
+        })
+    return out
+
+
+def transcribe_api(video_path: Path, caption_path: Path) -> bool:
+    """
+    Transcribe using OpenAI Whisper API (whisper-1).
+    Extracts audio as 32 kbps mono mp3 in chunks ≤ _API_CHUNK_MINUTES,
+    calls the API per chunk, then merges results.
+    """
+    if caption_path.exists():
+        print(f"  [skip] Caption already exists: {caption_path.name}")
+        return True
+
+    if not _OPENAI_API_KEY:
+        print("  [error] No OpenAI API key found. "
+              "Set openai_api.txt or OPENAI_API_KEY env var.")
+        return False
+
+    try:
+        from openai import OpenAI
+    except ImportError:
+        print("  [error] 'openai' package not installed. Run: pip install openai")
+        return False
+
+    client = OpenAI(api_key=_OPENAI_API_KEY)
+
+    print(f"  Transcribing via OpenAI Whisper API: {video_path.name}")
+    total_dur = _video_duration(video_path)
+    print(f"  Duration: {total_dur:.0f}s")
+
+    chunk_sec = _API_CHUNK_MINUTES * 60
+    offsets   = [i * chunk_sec for i in range(int(total_dur // chunk_sec) + 1)
+                 if i * chunk_sec < total_dur]
+
+    all_segments: list = []
+    detected_lang = "en"
+    lang_prob     = 1.0
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, start in enumerate(offsets):
+            dur = min(chunk_sec, total_dur - start)
+            audio_file = Path(tmp) / f"chunk_{i:03d}.mp3"
+
+            print(f"  Extracting audio chunk {i+1}/{len(offsets)} "
+                  f"({start:.0f}s – {start+dur:.0f}s)...")
+            _extract_audio(video_path, audio_file, start=start, duration=dur)
+
+            print(f"  Calling Whisper API (chunk {i+1}/{len(offsets)})...")
+            with open(audio_file, "rb") as f:
+                response = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=f,
+                    response_format="verbose_json",
+                    timestamp_granularities=["word", "segment"],
+                    language=WHISPER_LANGUAGE,   # None = auto-detect
+                )
+
+            # First chunk determines language
+            if i == 0:
+                lang_full    = getattr(response, "language", "english") or "english"
+                detected_lang = _LANG_NAMES.get(lang_full.lower(),
+                                                 lang_full[:2].lower())
+                print(f"  Language: {lang_full} ({detected_lang})")
+
+            segs = _api_segments_to_schema(
+                response.model_dump().get("segments", []),
+                time_offset=start,
+            )
+            # Re-number segment IDs to be globally unique
+            base_id = len(all_segments)
+            for j, s in enumerate(segs):
+                s["id"] = base_id + j
+            all_segments.extend(segs)
+
+    result = {
+        "language":             detected_lang,
+        "language_probability": lang_prob,
+        "duration":             round(total_dur, 3),
+        "segments":             all_segments,
+    }
+
+    caption_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(caption_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    n_seg  = len(result["segments"])
+    n_word = sum(len(s["words"]) for s in result["segments"])
+    print(f"  Saved: {n_seg} segments / {n_word} words -> {caption_path}")
+    return True
+
+
+# ── Local faster-whisper backend ──────────────────────────────────────────────
+
+def transcribe_local(video_path: Path, caption_path: Path) -> bool:
     """
     Transcribe a video file directly with faster-whisper large-v3 on GPU.
     faster-whisper uses ffmpeg internally to decode audio from the video.
-    A tqdm progress bar tracks segments as they are decoded.
     """
     if caption_path.exists():
         print(f"  [skip] Caption already exists: {caption_path.name}")
@@ -157,6 +318,30 @@ def transcribe(video_path: Path, caption_path: Path) -> bool:
     return True
 
 
+# ── Dispatcher ────────────────────────────────────────────────────────────────
+
+def _local_available() -> bool:
+    try:
+        import faster_whisper  # noqa: F401
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
+
+def transcribe(video_path: Path, caption_path: Path) -> bool:
+    """
+    Auto-select backend: use local faster-whisper if available (GPU + package
+    installed), otherwise fall back to OpenAI Whisper API.
+    """
+    if _local_available():
+        require_gpu()
+        return transcribe_local(video_path, caption_path)
+    else:
+        print("  [info] faster-whisper not available — using OpenAI Whisper API.")
+        return transcribe_api(video_path, caption_path)
+
+
 # ── Full pipeline for one video ───────────────────────────────────────────────
 
 def process_video(video_path: Path, manifest: dict, manifest_key: str | None) -> bool:
@@ -205,8 +390,6 @@ def main() -> None:
     parser.add_argument("--video", metavar="PATH",
                         help="Process a single video file (ignores manifest)")
     args = parser.parse_args()
-
-    require_gpu()
 
     manifest = load_manifest()
 
