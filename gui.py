@@ -32,12 +32,45 @@ SCRIPTS = {
     "generate":   PROJECT_DIR / "note_generation.py",
 }
 
-COURSES: dict[int, str] = {
-    85367: "CS2101 Effective Communication",
-    85377: "CS2103/T Software Engineering",
-    85397: "CS2105 Computer Networks",
-    85427: "CS3210 Parallel Computing",
-}
+COURSES: dict[int, str] = {}   # populated from Canvas API after token is entered
+
+_SKIP_KEYWORDS = [
+    "training", "pdp", "rmcpdp", "osa", "soct", "travel",
+    "essentials", "respect", "consent",
+]
+
+
+def _load_courses_from_canvas() -> None:
+    """Fetch active courses from Canvas and update the global COURSES dict."""
+    COURSES.clear()
+    token_file  = PROJECT_DIR / "canvas_token.txt"
+    config_file = PROJECT_DIR / "config.json"
+    token = token_file.read_text().strip() if token_file.exists() else ""
+    if not token:
+        return
+    cfg        = json.load(open(config_file)) if config_file.exists() else {}
+    canvas_url = cfg.get("CANVAS_URL", "").rstrip("/")
+    if not canvas_url:
+        return
+    try:
+        import requests
+        resp = requests.get(
+            f"{canvas_url}/api/v1/courses",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"enrollment_state": "active", "enrollment_type[]": "student",
+                    "per_page": 100},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        for c in resp.json():
+            name = c.get("name") or c.get("course_code") or ""
+            if not name:
+                continue
+            if any(kw in name.lower() for kw in _SKIP_KEYWORDS):
+                continue
+            COURSES[c["id"]] = name
+    except Exception:
+        pass   # silently leave COURSES empty; user sees the empty-state UI
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 
@@ -385,9 +418,12 @@ def _course_dropdown(value: str, on_select: callable,
         options.append(ft.dropdown.Option(key="0", text="All courses"))
     for cid, name in COURSES.items():
         options.append(ft.dropdown.Option(key=str(cid), text=f"{name}  ({cid})"))
+    if not options:
+        options.append(ft.dropdown.Option(
+            key="", text="— no courses, add Canvas token in Settings —"))
     return ft.Dropdown(
         options=options,
-        value=value,
+        value=value if COURSES else None,
         on_select=on_select,
         bgcolor=C_SURFACE,
         border_color=ft.Colors.with_opacity(0.25, ft.Colors.WHITE),
@@ -395,7 +431,7 @@ def _course_dropdown(value: str, on_select: callable,
         color=ft.Colors.WHITE,
         label="Course",
         label_style=ft.TextStyle(color=C_PRIMARY),
-        expand=True,              # responsive: fills available width
+        expand=True,
     )
 
 def _text_field(label: str, value: str = "", hint: str = "",
@@ -516,16 +552,33 @@ def build_dashboard(page: ft.Page, console: OutputConsole,
             on_click=_go,
         )
 
+    if COURSES:
+        items = list(COURSES.items())
+        course_rows = [
+            ft.Row(controls=[_course_card(cid, name)
+                              for cid, name in items[i:i+2]], spacing=12)
+            for i in range(0, len(items), 2)
+        ]
+    else:
+        course_rows = [_card(ft.Column(controls=[
+            ft.Container(height=8),
+            ft.Icon(ft.Icons.SCHOOL_OUTLINED, size=52,
+                    color=ft.Colors.with_opacity(0.25, ft.Colors.WHITE)),
+            ft.Text("No courses loaded", size=15,
+                    color=ft.Colors.with_opacity(0.45, ft.Colors.WHITE),
+                    weight=ft.FontWeight.W_500),
+            ft.Text(
+                "Go to Settings → enter your Canvas URL and API token,\n"
+                "then save to load your courses automatically.",
+                size=12, text_align=ft.TextAlign.CENTER,
+                color=ft.Colors.with_opacity(0.35, ft.Colors.WHITE),
+            ),
+            ft.Container(height=8),
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10))]
+
     scroll_content = [
         _section_title("Course Overview", ft.Icons.DASHBOARD_OUTLINED),
-        ft.Row(
-            controls=[_course_card(cid, name) for cid, name in list(COURSES.items())[:2]],
-            spacing=12,
-        ),
-        ft.Row(
-            controls=[_course_card(cid, name) for cid, name in list(COURSES.items())[2:]],
-            spacing=12,
-        ),
+        *course_rows,
         ft.Container(height=4),
         _section_title("Quick Actions", ft.Icons.BOLT_OUTLINED),
         ft.Row(controls=[
@@ -541,7 +594,7 @@ def build_dashboard(page: ft.Page, console: OutputConsole,
 # ── Page: Full Pipeline ───────────────────────────────────────────────────────
 
 def build_pipeline(page: ft.Page, console: OutputConsole) -> ft.Column:
-    course_val = {"v": str(list(COURSES.keys())[0])}
+    course_val = {"v": str(next(iter(COURSES), ""))}
 
     course_dd = _course_dropdown(
         value=course_val["v"],
@@ -858,11 +911,11 @@ def build_align(page: ft.Page, console: OutputConsole) -> ft.Column:
 # ── Page: Generate Notes ──────────────────────────────────────────────────────
 
 def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
-    default_cid  = list(COURSES.keys())[0]
-    course_val   = {"v": str(default_cid)}
+    default_cid   = next(iter(COURSES), None)
+    course_val    = {"v": str(default_cid) if default_cid else ""}
 
     course_name_f = _text_field("Course name",
-                                 value=_course_name_from_notes(default_cid))
+                                 value=_course_name_from_notes(default_cid) if default_cid else "")
 
     def _on_course_select(e) -> None:
         # Bug fix: use e.data
@@ -971,7 +1024,8 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
 
 # ── Page: Settings ────────────────────────────────────────────────────────────
 
-def build_settings(page: ft.Page) -> ft.Column:
+def build_settings(page: ft.Page,
+                   on_courses_changed: callable | None = None) -> ft.Column:
 
     def _snack(msg: str, ok: bool = True) -> None:
         page.snack_bar = ft.SnackBar(
@@ -1020,6 +1074,8 @@ def build_settings(page: ft.Page) -> ft.Column:
         try:
             _save_config("CANVAS_URL", tf_canvas_url.value.strip())
             _snack("Canvas URL saved.")
+            if on_courses_changed:
+                on_courses_changed()
         except Exception as e:
             _snack(f"Error: {e}", ok=False)
 
@@ -1075,7 +1131,9 @@ def build_settings(page: ft.Page) -> ft.Column:
     def _save_canvas(_):
         try:
             canvas_file.write_text(tf_canvas.value.strip())
-            _snack("Canvas token saved to canvas_token.txt.")
+            _snack("Canvas token saved.")
+            if on_courses_changed:
+                on_courses_changed()
         except Exception as e:
             _snack(f"Error: {e}", ok=False)
 
@@ -1320,15 +1378,25 @@ def main(page: ft.Page) -> None:
         if _nav_target[0]:
             _nav_target[0](idx)
 
-    pages = [
-        build_dashboard(page, console, navigate=navigate),
-        build_pipeline(page, console),
-        build_download(page, console),
-        build_transcribe(page, console),
-        build_align(page, console),
-        build_generate(page, console),
-        build_settings(page),
-    ]
+    # Mutable ref so _rebuild can be passed to build_settings before it's defined
+    _rebuild_ref: list[callable | None] = [None]
+
+    def _build_pages() -> list:
+        return [
+            build_dashboard(page, console, navigate=navigate),
+            build_pipeline(page, console),
+            build_download(page, console),
+            build_transcribe(page, console),
+            build_align(page, console),
+            build_generate(page, console),
+            build_settings(page,
+                           on_courses_changed=lambda: _rebuild_ref[0] and _rebuild_ref[0]()),
+        ]
+
+    # Try to populate courses immediately if credentials are already on disk
+    _load_courses_from_canvas()
+
+    pages = _build_pages()
 
     # page_content swaps between tab pages; console stays fixed at the bottom
     page_content = ft.Container(
@@ -1361,6 +1429,17 @@ def main(page: ft.Page) -> None:
         page.update()
 
     _nav_target[0] = _navigate
+
+    def _rebuild() -> None:
+        """Reload courses from Canvas and rebuild all course-dependent pages."""
+        _load_courses_from_canvas()
+        new = _build_pages()
+        pages.clear()
+        pages.extend(new)
+        page_content.content = pages[rail.selected_index]
+        page.update()
+
+    _rebuild_ref[0] = _rebuild
 
     rail = ft.NavigationRail(
         selected_index=0,

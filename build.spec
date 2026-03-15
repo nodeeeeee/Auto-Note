@@ -11,6 +11,14 @@ from PyInstaller.utils.hooks import collect_all
 block_cipher = None
 HERE = Path(SPECPATH)   # noqa: F821 — injected by PyInstaller
 
+# Platform-specific icon
+if sys.platform == "win32":
+    _icon = str(HERE / "assets" / "icon.ico")
+elif sys.platform == "darwin":
+    _icon = str(HERE / "assets" / "icon.icns")
+else:
+    _icon = str(HERE / "assets" / "icon.png")
+
 # Collect all data/binaries from flet packages
 # flet_desktop: bundled Flutter client binary
 # flet + flet_core: icons.json and other package data files
@@ -72,7 +80,7 @@ exe = EXE(   # noqa: F821
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,              # add icon path here if available
+    icon=_icon,
 )
 
 coll = COLLECT(   # noqa: F821

@@ -3,3 +3,4 @@ pyinstaller
 openai
 httpx
 anthropic
+pillow
