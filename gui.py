@@ -830,7 +830,7 @@ def build_transcribe(page: ft.Page, console: OutputConsole) -> ft.Column:
 # ── Page: Align ───────────────────────────────────────────────────────────────
 
 def build_align(page: ft.Page, console: OutputConsole) -> ft.Column:
-    course_val  = {"v": str(list(COURSES.keys())[0])}
+    course_val  = {"v": str(next(iter(COURSES), ""))}
     course_dd   = _course_dropdown(
         value=course_val["v"],
         # Bug fix: use e.data
