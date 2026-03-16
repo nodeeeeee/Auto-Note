@@ -36,7 +36,7 @@ COURSES: dict[int, str] = {}   # populated from Canvas API after token is entere
 
 _SKIP_KEYWORDS = [
     "training", "pdp", "rmcpdp", "osa", "soct", "travel",
-    "essentials", "respect", "consent",
+    "essentials", "respect", "consent", "osh",
 ]
 
 
@@ -49,7 +49,9 @@ def _load_courses_from_canvas() -> None:
     if not token:
         return
     cfg        = json.load(open(config_file)) if config_file.exists() else {}
-    canvas_url = cfg.get("CANVAS_URL", "").rstrip("/")
+    canvas_url = cfg.get("CANVAS_URL", "").strip().rstrip("/")
+    if canvas_url and not canvas_url.startswith(("http://", "https://")):
+        canvas_url = "https://" + canvas_url
     if not canvas_url:
         return
     try:
@@ -57,8 +59,7 @@ def _load_courses_from_canvas() -> None:
         resp = requests.get(
             f"{canvas_url}/api/v1/courses",
             headers={"Authorization": f"Bearer {token}"},
-            params={"enrollment_state": "active", "enrollment_type[]": "student",
-                    "per_page": 100},
+            params={"enrollment_state": "active", "per_page": 100},
             timeout=10,
         )
         resp.raise_for_status()
@@ -1061,7 +1062,7 @@ def build_settings(page: ft.Page,
     _cfg = _load_config()
     tf_canvas_url = ft.TextField(
         value=_cfg.get("CANVAS_URL", ""),
-        hint_text="https://canvas.yourschool.edu", expand=True, dense=True,
+        hint_text="canvas.yourschool.edu  (https:// added automatically)", expand=True, dense=True,
         bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12,
     )
     tf_panopto = ft.TextField(
@@ -1128,12 +1129,31 @@ def build_settings(page: ft.Page,
         bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12,
     )
 
+    refresh_status = ft.Text("", size=11,
+                             color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE))
+
+    def _do_refresh():
+        refresh_status.value = "Refreshing…"
+        refresh_status.color = ft.Colors.with_opacity(0.6, ft.Colors.WHITE)
+        page.update()
+        # Load courses while this settings page is still attached
+        _load_courses_from_canvas()
+        n = len(COURSES)
+        refresh_status.value = (
+            f"✓ {n} course{'s' if n != 1 else ''} loaded."
+            if n else "No courses found — check token and Canvas URL."
+        )
+        refresh_status.color = C_SUCCESS if n else C_WARN
+        page.update()
+        # Rebuild pages AFTER updating status (rebuild replaces the settings page)
+        if on_courses_changed:
+            on_courses_changed()
+
     def _save_canvas(_):
         try:
             canvas_file.write_text(tf_canvas.value.strip())
             _snack("Canvas token saved.")
-            if on_courses_changed:
-                on_courses_changed()
+            _do_refresh()
         except Exception as e:
             _snack(f"Error: {e}", ok=False)
 
@@ -1165,6 +1185,14 @@ def build_settings(page: ft.Page,
                 size=11, color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
         ft.Container(height=4),
         _key_row("Canvas Token",     tf_canvas,    _save_canvas),
+        ft.Row(controls=[
+            ft.FilledButton(
+                "Refresh Courses", icon=ft.Icons.REFRESH,
+                on_click=lambda _: _do_refresh(),
+                style=ft.ButtonStyle(bgcolor=C_SECONDARY, color=ft.Colors.BLACK),
+            ),
+            refresh_status,
+        ], spacing=10),
         _key_row("OpenAI API Key",   tf_openai,    _save_openai),
         _key_row("Anthropic API Key",tf_anthropic, _save_anthropic),
         _key_row("Gemini API Key",   tf_gemini,    _save_gemini),
