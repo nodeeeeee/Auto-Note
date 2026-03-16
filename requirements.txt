@@ -4,3 +4,4 @@ openai
 httpx
 anthropic
 pillow
+requests
