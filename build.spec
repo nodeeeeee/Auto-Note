@@ -51,6 +51,7 @@ a = Analysis(
         "certifi",
         "charset_normalizer",
         "idna",
+        "tqdm",
     ],
     hookspath=[],
     hooksconfig={},
