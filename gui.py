@@ -1464,7 +1464,15 @@ def main(page: ft.Page) -> None:
         new = _build_pages()
         pages.clear()
         pages.extend(new)
-        page_content.content = pages[rail.selected_index]
+        if COURSES and rail.selected_index == 6:
+            # Refreshed from Settings and courses are now available —
+            # jump to Dashboard so the user immediately sees the result.
+            rail.selected_index = 0
+            page_content.content = pages[0]
+        elif rail.selected_index != 6:
+            # Normal navigation rebuild — update current page.
+            page_content.content = pages[rail.selected_index]
+        # If still on Settings with no courses, leave content alone (avoids blank render).
         page.update()
 
     _rebuild_ref[0] = _rebuild
