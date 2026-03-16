@@ -32,6 +32,16 @@ SCRIPTS = {
     "generate":   PROJECT_DIR / "note_generation.py",
 }
 
+# User data directory: persistent across app restarts.
+# When running as a PyInstaller bundle (AppImage / .exe), __file__ resolves to
+# a temporary extraction folder that is deleted on exit — any files written
+# there are lost.  Use ~/.auto_note/ instead so credentials and config survive.
+if getattr(sys, "frozen", False):
+    DATA_DIR = Path.home() / ".auto_note"
+else:
+    DATA_DIR = PROJECT_DIR
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 COURSES: dict[int, str] = {}   # populated from Canvas API after token is entered
 
 _SKIP_KEYWORDS = [
@@ -44,8 +54,8 @@ def _load_courses_from_canvas() -> str:
     """Fetch active courses from Canvas and update the global COURSES dict.
     Returns "" on success, or a human-readable error string on failure."""
     COURSES.clear()
-    token_file  = PROJECT_DIR / "canvas_token.txt"
-    config_file = PROJECT_DIR / "config.json"
+    token_file  = DATA_DIR / "canvas_token.txt"
+    config_file = DATA_DIR / "config.json"
     token = token_file.read_text().strip() if token_file.exists() else ""
     if not token:
         return "Canvas token not saved — enter it in Settings → API Keys."
@@ -91,7 +101,7 @@ MONO        = "Courier New"
 # ── Pipeline state helpers ────────────────────────────────────────────────────
 
 def _manifest() -> dict:
-    p = PROJECT_DIR / "manifest.json"
+    p = DATA_DIR / "manifest.json"
     return json.loads(p.read_text()) if p.exists() else {}
 
 def _video_status(course_id: int) -> tuple[int, int]:
@@ -101,16 +111,16 @@ def _video_status(course_id: int) -> tuple[int, int]:
     return done, len(items)
 
 def _caption_count(course_id: int) -> int:
-    d = PROJECT_DIR / str(course_id) / "captions"
+    d = DATA_DIR / str(course_id) / "captions"
     return len(list(d.glob("*.json"))) if d.exists() else 0
 
 def _alignment_count(course_id: int) -> int:
-    d = PROJECT_DIR / str(course_id) / "alignment"
+    d = DATA_DIR / str(course_id) / "alignment"
     return len([f for f in d.glob("*.json")
                 if "compact" not in f.name]) if d.exists() else 0
 
 def _notes_path(course_id: int) -> Path | None:
-    d = PROJECT_DIR / str(course_id) / "notes"
+    d = DATA_DIR / str(course_id) / "notes"
     if d.exists():
         mds = list(d.glob("*.md"))
         return mds[0] if mds else None
@@ -1059,7 +1069,7 @@ def build_settings(page: ft.Page,
 
     # ── Connection settings (config.json) ────────────────────────────────────
 
-    config_file = PROJECT_DIR / "config.json"
+    config_file = DATA_DIR / "config.json"
 
     def _load_config() -> dict:
         return json.load(open(config_file)) if config_file.exists() else {}
@@ -1073,10 +1083,10 @@ def build_settings(page: ft.Page,
     # _v holds the live text for every field; on_change keeps it in sync.
     # Reading tf.value without on_change returns the *initial* value only.
     _cfg = _load_config()
-    canvas_file    = PROJECT_DIR / "canvas_token.txt"
-    openai_file    = PROJECT_DIR / "openai_api.txt"
-    anthropic_file = PROJECT_DIR / "anthropic_key.txt"
-    gemini_file    = PROJECT_DIR / "gemini_api.txt"
+    canvas_file    = DATA_DIR / "canvas_token.txt"
+    openai_file    = DATA_DIR / "openai_api.txt"
+    anthropic_file = DATA_DIR / "anthropic_key.txt"
+    gemini_file    = DATA_DIR / "gemini_api.txt"
 
     _v = {
         "canvas_url":  _cfg.get("CANVAS_URL", ""),
@@ -1162,7 +1172,7 @@ def build_settings(page: ft.Page,
         ft.Row(controls=[
             ft.Text("Project dir", size=11,
                     color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
-            ft.Text(str(PROJECT_DIR), size=11, selectable=True,
+            ft.Text(str(DATA_DIR), size=11, selectable=True,
                     color=ft.Colors.with_opacity(0.7, ft.Colors.WHITE)),
         ], spacing=8),
     ], spacing=10))
