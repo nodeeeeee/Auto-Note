@@ -1043,19 +1043,18 @@ def build_settings(page: ft.Page,
                    on_courses_changed: callable | None = None) -> ft.Column:
 
     def _snack(msg: str, ok: bool = True) -> None:
-        page.open(ft.SnackBar(
-            ft.Text(msg, color=ft.Colors.BLACK),
+        page.snack_bar = ft.SnackBar(
+            content=ft.Text(msg, color=ft.Colors.BLACK),
             bgcolor=C_SUCCESS if ok else C_ERROR,
             duration=2500,
-        ))
+            open=True,
+        )
+        page.update()
 
-    def _key_row(label: str, tf: ft.TextField, on_save) -> ft.Row:
+    def _field_row(label: str, tf: ft.TextField) -> ft.Row:
         return ft.Row(controls=[
             ft.Text(label, size=12, color=ft.Colors.WHITE, width=140),
             tf,
-            ft.FilledButton("Save", icon=ft.Icons.SAVE_OUTLINED,
-                            on_click=on_save, style=ft.ButtonStyle(
-                                bgcolor=C_PRIMARY, color=ft.Colors.BLACK)),
         ], spacing=8)
 
     # ── Connection settings (config.json) ────────────────────────────────────
@@ -1065,9 +1064,9 @@ def build_settings(page: ft.Page,
     def _load_config() -> dict:
         return json.load(open(config_file)) if config_file.exists() else {}
 
-    def _save_config(key: str, value: str) -> None:
+    def _save_config_all(data: dict) -> None:
         cfg = _load_config()
-        cfg[key] = value
+        cfg.update(data)
         with open(config_file, "w") as f:
             json.dump(cfg, f, indent=2)
 
@@ -1083,28 +1082,14 @@ def build_settings(page: ft.Page,
         bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12,
     )
 
-    def _save_canvas_url(_):
-        try:
-            _save_config("CANVAS_URL", tf_canvas_url.value.strip())
-            _snack("Canvas URL saved successfully!")
-        except Exception as e:
-            _snack(f"Error: {e}", ok=False)
-
-    def _save_panopto(_):
-        try:
-            _save_config("PANOPTO_HOST", tf_panopto.value.strip())
-            _snack("Panopto host saved successfully!")
-        except Exception as e:
-            _snack(f"Error: {e}", ok=False)
-
     conn_card = _card(ft.Column(controls=[
         ft.Text("Connection", size=13,
                 weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
         ft.Text("Saved to config.json in the project directory.",
                 size=11, color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
         ft.Container(height=4),
-        _key_row("Canvas URL",    tf_canvas_url, _save_canvas_url),
-        _key_row("Panopto Host",  tf_panopto,    _save_panopto),
+        _field_row("Canvas URL",   tf_canvas_url),
+        _field_row("Panopto Host", tf_panopto),
     ], spacing=10))
 
     # ── API Keys ──────────────────────────────────────────────────────────────
@@ -1146,7 +1131,6 @@ def build_settings(page: ft.Page,
         refresh_status.value = "Refreshing…"
         refresh_status.color = ft.Colors.with_opacity(0.6, ft.Colors.WHITE)
         page.update()
-        # Load courses while this settings page is still attached
         err = _load_courses_from_canvas()
         n = len(COURSES)
         if n:
@@ -1159,37 +1143,8 @@ def build_settings(page: ft.Page,
             refresh_status.value = "No courses found after filtering."
             refresh_status.color = C_WARN
         page.update()
-        # Rebuild pages AFTER updating status (rebuild replaces the settings page)
         if on_courses_changed:
             on_courses_changed()
-
-    def _save_canvas(_):
-        try:
-            canvas_file.write_text(tf_canvas.value.strip())
-            _snack("Canvas token saved successfully!")
-        except Exception as e:
-            _snack(f"Error: {e}", ok=False)
-
-    def _save_openai(_):
-        try:
-            openai_file.write_text(tf_openai.value.strip())
-            _snack("OpenAI key saved successfully!")
-        except Exception as e:
-            _snack(f"Error: {e}", ok=False)
-
-    def _save_anthropic(_):
-        try:
-            anthropic_file.write_text(tf_anthropic.value.strip())
-            _snack("Anthropic key saved successfully!")
-        except Exception as e:
-            _snack(f"Error: {e}", ok=False)
-
-    def _save_gemini(_):
-        try:
-            gemini_file.write_text(tf_gemini.value.strip())
-            _snack("Gemini key saved successfully!")
-        except Exception as e:
-            _snack(f"Error: {e}", ok=False)
 
     keys_card = _card(ft.Column(controls=[
         ft.Text("API Keys & Credentials", size=13,
@@ -1197,18 +1152,10 @@ def build_settings(page: ft.Page,
         ft.Text("Keys are stored in plaintext files in the project directory.",
                 size=11, color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
         ft.Container(height=4),
-        _key_row("Canvas Token",     tf_canvas,    _save_canvas),
-        ft.Row(controls=[
-            ft.FilledButton(
-                "Refresh Courses", icon=ft.Icons.REFRESH,
-                on_click=lambda _: _do_refresh(),
-                style=ft.ButtonStyle(bgcolor=C_SECONDARY, color=ft.Colors.BLACK),
-            ),
-            refresh_status,
-        ], spacing=10),
-        _key_row("OpenAI API Key",   tf_openai,    _save_openai),
-        _key_row("Anthropic API Key",tf_anthropic, _save_anthropic),
-        _key_row("Gemini API Key",   tf_gemini,    _save_gemini),
+        _field_row("Canvas Token",      tf_canvas),
+        _field_row("OpenAI API Key",    tf_openai),
+        _field_row("Anthropic API Key", tf_anthropic),
+        _field_row("Gemini API Key",    tf_gemini),
         ft.Row(controls=[
             ft.Text("Project dir", size=11,
                     color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
@@ -1302,6 +1249,9 @@ def build_settings(page: ft.Page,
         ("generate",   "QUALITY_TARGET",        "Self-score target",       "8.0",  None),
     ]
 
+    # Collect (ctrl, script, name, default) for bulk save
+    _const_ctrls: list[tuple] = []
+
     def _const_row(script: str, name: str, desc: str, default: str,
                    options: list[tuple[str, str]] | None = None) -> ft.Row:
         cur    = _read_constant(script, name)
@@ -1315,21 +1265,6 @@ def build_settings(page: ft.Page,
                 bgcolor=C_OUTPUT_BG, border_color=accent, text_size=12,
                 content_padding=ft.padding.symmetric(horizontal=8, vertical=4),
             )
-
-            def _save(_, c=ctrl, s=script, n=name):
-                if _write_constant(s, n, c.value or default):
-                    _snack(f"{n} saved.")
-                else:
-                    _snack(f"Failed to save {n}.", ok=False)
-
-            def _reset(_, c=ctrl, s=script, n=name, d=default):
-                c.value = d
-                c.update()
-                if _write_constant(s, n, d):
-                    _snack(f"{n} reset to default.")
-                else:
-                    _snack(f"Failed to reset {n}.", ok=False)
-
         else:
             ctrl = ft.TextField(
                 value=cur, expand=True, dense=True,
@@ -1337,19 +1272,15 @@ def build_settings(page: ft.Page,
                 text_size=12, content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
             )
 
-            def _save(_, c=ctrl, s=script, n=name):
-                if _write_constant(s, n, c.value.strip()):
-                    _snack(f"{n} saved.")
-                else:
-                    _snack(f"Failed to save {n}.", ok=False)
+        _const_ctrls.append((ctrl, script, name, default))
 
-            def _reset(_, c=ctrl, s=script, n=name, d=default):
-                c.value = d
-                c.update()
-                if _write_constant(s, n, d):
-                    _snack(f"{n} reset to default ({d}).")
-                else:
-                    _snack(f"Failed to reset {n}.", ok=False)
+        def _reset(_, c=ctrl, s=script, n=name, d=default):
+            c.value = d
+            c.update()
+            if _write_constant(s, n, d):
+                _snack(f"{n} reset to default.")
+            else:
+                _snack(f"Failed to reset {n}.", ok=False)
 
         return ft.Row(controls=[
             ft.Container(
@@ -1362,10 +1293,6 @@ def build_settings(page: ft.Page,
             ft.Text(name, size=11, color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE),
                     width=160, italic=True),
             ctrl,
-            ft.FilledButton(
-                "Save", icon=ft.Icons.SAVE_OUTLINED, on_click=_save,
-                style=ft.ButtonStyle(bgcolor=C_PRIMARY, color=ft.Colors.BLACK),
-            ),
             ft.OutlinedButton(
                 "Default", on_click=_reset,
                 style=ft.ButtonStyle(side=ft.BorderSide(1, C_SECONDARY),
@@ -1385,6 +1312,57 @@ def build_settings(page: ft.Page,
         *const_rows,
     ], spacing=10))
 
+    # ── Single Save All button ────────────────────────────────────────────────
+
+    def _save_all(_):
+        errors: list[str] = []
+        try:
+            _save_config_all({
+                "CANVAS_URL":   tf_canvas_url.value.strip(),
+                "PANOPTO_HOST": tf_panopto.value.strip(),
+            })
+        except Exception as e:
+            errors.append(f"Connection: {e}")
+        for path, tf in [
+            (canvas_file,    tf_canvas),
+            (openai_file,    tf_openai),
+            (anthropic_file, tf_anthropic),
+            (gemini_file,    tf_gemini),
+        ]:
+            try:
+                if tf.value.strip():
+                    path.write_text(tf.value.strip())
+            except Exception as e:
+                errors.append(str(e))
+        for ctrl, script, name, default in _const_ctrls:
+            val = (ctrl.value or default) if isinstance(ctrl, ft.Dropdown) \
+                  else ctrl.value.strip()
+            if not _write_constant(script, name, val):
+                errors.append(f"Failed to write {name}")
+        if errors:
+            _snack("Errors: " + "; ".join(errors), ok=False)
+        else:
+            _snack("All settings saved successfully!")
+
+    save_btn = ft.FilledButton(
+        "Save All Settings",
+        icon=ft.Icons.SAVE_OUTLINED,
+        on_click=_save_all,
+        style=ft.ButtonStyle(
+            bgcolor=C_PRIMARY, color=ft.Colors.BLACK,
+            padding=ft.padding.symmetric(horizontal=28, vertical=14),
+        ),
+    )
+    refresh_btn_settings = ft.OutlinedButton(
+        "Refresh Courses",
+        icon=ft.Icons.REFRESH,
+        on_click=lambda _: _do_refresh(),
+        style=ft.ButtonStyle(
+            side=ft.BorderSide(1, C_SECONDARY), color=C_SECONDARY,
+            padding=ft.padding.symmetric(horizontal=20, vertical=14),
+        ),
+    )
+
     return ft.Column(
         controls=[
             ft.Column(controls=[
@@ -1392,6 +1370,13 @@ def build_settings(page: ft.Page,
                 conn_card,
                 keys_card,
                 const_card,
+                ft.Container(height=8),
+                ft.Row(controls=[
+                    save_btn,
+                    refresh_btn_settings,
+                    refresh_status,
+                ], spacing=12),
+                ft.Container(height=16),
             ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True),
         ],
         expand=True,
