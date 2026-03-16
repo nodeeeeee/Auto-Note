@@ -40,20 +40,21 @@ _SKIP_KEYWORDS = [
 ]
 
 
-def _load_courses_from_canvas() -> None:
-    """Fetch active courses from Canvas and update the global COURSES dict."""
+def _load_courses_from_canvas() -> str:
+    """Fetch active courses from Canvas and update the global COURSES dict.
+    Returns "" on success, or a human-readable error string on failure."""
     COURSES.clear()
     token_file  = PROJECT_DIR / "canvas_token.txt"
     config_file = PROJECT_DIR / "config.json"
     token = token_file.read_text().strip() if token_file.exists() else ""
     if not token:
-        return
+        return "Canvas token not saved — enter it in Settings → API Keys."
     cfg        = json.load(open(config_file)) if config_file.exists() else {}
     canvas_url = cfg.get("CANVAS_URL", "").strip().rstrip("/")
     if canvas_url and not canvas_url.startswith(("http://", "https://")):
         canvas_url = "https://" + canvas_url
     if not canvas_url:
-        return
+        return "Canvas URL not saved — enter it in Settings → Connection."
     try:
         import requests
         resp = requests.get(
@@ -70,8 +71,9 @@ def _load_courses_from_canvas() -> None:
             if any(kw in name.lower() for kw in _SKIP_KEYWORDS):
                 continue
             COURSES[c["id"]] = name
-    except Exception:
-        pass   # silently leave COURSES empty; user sees the empty-state UI
+        return ""
+    except Exception as exc:
+        return str(exc)
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 
@@ -1137,13 +1139,17 @@ def build_settings(page: ft.Page,
         refresh_status.color = ft.Colors.with_opacity(0.6, ft.Colors.WHITE)
         page.update()
         # Load courses while this settings page is still attached
-        _load_courses_from_canvas()
+        err = _load_courses_from_canvas()
         n = len(COURSES)
-        refresh_status.value = (
-            f"✓ {n} course{'s' if n != 1 else ''} loaded."
-            if n else "No courses found — check token and Canvas URL."
-        )
-        refresh_status.color = C_SUCCESS if n else C_WARN
+        if n:
+            refresh_status.value = f"✓ {n} course{'s' if n != 1 else ''} loaded."
+            refresh_status.color = C_SUCCESS
+        elif err:
+            refresh_status.value = f"✗ {err}"
+            refresh_status.color = C_ERROR
+        else:
+            refresh_status.value = "No courses found after filtering."
+            refresh_status.color = C_WARN
         page.update()
         # Rebuild pages AFTER updating status (rebuild replaces the settings page)
         if on_courses_changed:
@@ -1460,7 +1466,7 @@ def main(page: ft.Page) -> None:
 
     def _rebuild() -> None:
         """Reload courses from Canvas and rebuild all course-dependent pages."""
-        _load_courses_from_canvas()
+        _load_courses_from_canvas()  # return value intentionally ignored here
         new = _build_pages()
         pages.clear()
         pages.extend(new)
