@@ -1301,6 +1301,14 @@ def build_settings(page: ft.Page,
         style=ft.ButtonStyle(side=ft.BorderSide(1, C_SECONDARY), color=C_SECONDARY),
         visible=_venv_exists,
     )
+    # Manual Python path override for when auto-detection fails
+    _base_py_v = {"v": ""}
+    tf_base_py = ft.TextField(
+        hint_text="Python path (auto-detected, override if needed — e.g. /usr/bin/python3.12)",
+        expand=True, dense=True, bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY,
+        text_size=11, visible=False,
+        on_change=lambda e: _base_py_v.update({"v": e.control.value}),
+    )
 
     def _append_log(line: str) -> None:
         env_log.value = (env_log.value or "") + line + "\n"
@@ -1323,46 +1331,77 @@ def build_settings(page: ft.Page,
             # ── Find a Python that has SSL (required for pip HTTPS) ──────────
             import shutil as _sh
             home = Path.home()
-            _candidates = [
-                # conda/mamba installs (have SSL bundled)
-                str(home / "miniconda3/bin/python3"),
-                str(home / "miniconda3/bin/python"),
-                str(home / "anaconda3/bin/python3"),
-                str(home / "anaconda3/bin/python"),
-                str(home / "miniforge3/bin/python3"),
-                str(home / "miniforge3/bin/python"),
-                str(home / "mambaforge/bin/python3"),
-                str(home / "mambaforge/bin/python"),
-                str(home / ".local/share/mamba/bin/python3"),
-                # PATH lookup
-                _sh.which("python3") or "",
-                _sh.which("python") or "",
-                "/usr/bin/python3",
-                "/usr/local/bin/python3",
-            ]
 
-            base_py = ""
-            for cand in _candidates:
-                if not cand or not Path(cand).exists():
-                    continue
-                r = subprocess.run(
-                    [cand, "-c", "import ssl, venv"],
-                    capture_output=True, timeout=5,
-                )
-                if r.returncode == 0:
-                    base_py = cand
-                    _append_log(f"► Using Python: {base_py}")
-                    break
+            # 1) Manual override from the text field
+            base_py = _base_py_v["v"].strip()
+
+            # 2) Login shell — respects .bashrc/.zshrc and conda init
+            if not base_py:
+                _append_log("► Probing login shell for Python …")
+                for shell_cmd in [
+                    ["bash", "-l", "-c",
+                     "python3 -c 'import ssl,venv,sys; print(sys.executable)'"],
+                    ["zsh",  "-l", "-c",
+                     "python3 -c 'import ssl,venv,sys; print(sys.executable)'"],
+                ]:
+                    try:
+                        r = subprocess.run(shell_cmd, capture_output=True,
+                                           text=True, timeout=15)
+                        if r.returncode == 0:
+                            for line in reversed(r.stdout.strip().splitlines()):
+                                line = line.strip()
+                                if line and Path(line).exists():
+                                    base_py = line
+                                    break
+                        if base_py:
+                            break
+                    except Exception:
+                        pass
+
+            # 3) Common install locations
+            if not base_py:
+                _candidates = [
+                    str(home / "miniconda3/bin/python3"),
+                    str(home / "miniconda3/bin/python"),
+                    str(home / "anaconda3/bin/python3"),
+                    str(home / "anaconda3/bin/python"),
+                    str(home / "miniforge3/bin/python3"),
+                    str(home / "miniforge3/bin/python"),
+                    str(home / "mambaforge/bin/python3"),
+                    str(home / "mambaforge/bin/python"),
+                    str(home / ".local/share/mamba/bin/python3"),
+                    "/opt/conda/bin/python3",
+                    "/opt/miniconda3/bin/python3",
+                    "/opt/anaconda3/bin/python3",
+                    _sh.which("python3") or "",
+                    _sh.which("python") or "",
+                    "/usr/bin/python3",
+                    "/usr/local/bin/python3",
+                ]
+                for cand in _candidates:
+                    if not cand or not Path(cand).exists():
+                        continue
+                    r = subprocess.run([cand, "-c", "import ssl, venv"],
+                                       capture_output=True, timeout=5)
+                    if r.returncode == 0:
+                        base_py = cand
+                        break
 
             if not base_py:
-                _append_log("ERROR: No Python 3 with SSL support found.")
-                _append_log("  Install Miniconda or ensure python3 is built with SSL.")
-                env_status.value = "✗ Setup failed — Python with SSL not found"
+                _append_log("ERROR: Could not find a Python 3 with SSL support.")
+                _append_log("")
+                _append_log("  Paste the path to your conda/system Python below")
+                _append_log("  (e.g. /home/user/miniconda3/bin/python3)")
+                _append_log("  then click Install again.")
+                tf_base_py.visible = True
+                env_status.value = "✗ Python not found — enter path below"
                 env_status.color = C_ERROR
                 env_setup_btn.disabled = False
                 env_reinstall_btn.disabled = False
                 page.update()
                 return
+
+            _append_log(f"► Using Python: {base_py}")
 
             # Step 1 — create venv (remove stale one first)
             import shutil as _sh2
@@ -1467,6 +1506,7 @@ def build_settings(page: ft.Page,
             env_status,
         ], spacing=8),
         ft.Row(controls=[env_setup_btn, env_reinstall_btn], spacing=10),
+        tf_base_py,
         env_log,
     ], spacing=10))
 
