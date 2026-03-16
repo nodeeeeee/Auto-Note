@@ -46,6 +46,23 @@ else:
     DATA_DIR = PROJECT_DIR
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+_DEFAULT_PYTHON = PYTHON   # auto-detected fallback; may be overridden by user config
+
+
+def _load_python_from_config() -> None:
+    """Override PYTHON global with the user-configured interpreter path."""
+    global PYTHON
+    config_file = DATA_DIR / "config.json"
+    if config_file.exists():
+        try:
+            cfg = json.load(open(config_file))
+            p = cfg.get("PYTHON_PATH", "").strip()
+            if p:
+                PYTHON = p
+        except Exception:
+            pass
+
+
 COURSES: dict[int, str] = {}   # populated from Canvas API after token is entered
 
 _SKIP_KEYWORDS = [
@@ -1097,6 +1114,7 @@ def build_settings(page: ft.Page,
     _v = {
         "canvas_url":  _cfg.get("CANVAS_URL", ""),
         "panopto":     _cfg.get("PANOPTO_HOST", ""),
+        "python_path": _cfg.get("PYTHON_PATH", ""),
         "canvas":      canvas_file.read_text().strip() if canvas_file.exists() else "",
         "openai":      openai_file.read_text().strip() if openai_file.exists() else "",
         "anthropic":   anthropic_file.read_text().strip() if anthropic_file.exists() else "",
@@ -1115,6 +1133,9 @@ def build_settings(page: ft.Page,
         expand=True, dense=True, bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12)
     tf_panopto = _mk_tf("panopto",
         hint_text="mediaweb.ap.panopto.com",
+        expand=True, dense=True, bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12)
+    tf_python_path = _mk_tf("python_path",
+        hint_text="/path/to/conda/envs/auto-note/bin/python  (leave blank for system python3)",
         expand=True, dense=True, bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12)
     tf_canvas = _mk_tf("canvas",
         password=True, can_reveal_password=True,
@@ -1141,6 +1162,7 @@ def build_settings(page: ft.Page,
         ft.Container(height=4),
         _field_row("Canvas URL",   tf_canvas_url),
         _field_row("Panopto Host", tf_panopto),
+        _field_row("Python Path",  tf_python_path),
     ], spacing=10))
 
     refresh_status = ft.Text("", size=11,
@@ -1156,6 +1178,7 @@ def build_settings(page: ft.Page,
             _save_config_all({
                 "CANVAS_URL":   _v["canvas_url"].strip(),
                 "PANOPTO_HOST": _v["panopto"].strip(),
+                "PYTHON_PATH":  _v["python_path"].strip(),
             })
             if _v["canvas"].strip():
                 canvas_file.write_text(_v["canvas"].strip())
@@ -1346,12 +1369,16 @@ def build_settings(page: ft.Page,
     # ── Single Save All button ────────────────────────────────────────────────
 
     def _save_all(_):
+        global PYTHON
         errors: list[str] = []
         try:
             _save_config_all({
                 "CANVAS_URL":   _v["canvas_url"].strip(),
                 "PANOPTO_HOST": _v["panopto"].strip(),
+                "PYTHON_PATH":  _v["python_path"].strip(),
             })
+            p = _v["python_path"].strip()
+            PYTHON = p if p else _DEFAULT_PYTHON
         except Exception as e:
             errors.append(f"Connection: {e}")
         for path, key in [
@@ -1452,6 +1479,9 @@ def main(page: ft.Page) -> None:
             build_settings(page,
                            on_courses_changed=lambda: _rebuild_ref[0] and _rebuild_ref[0]()),
         ]
+
+    # Load user-configured Python interpreter (e.g. conda env) from config
+    _load_python_from_config()
 
     # Try to populate courses immediately if credentials are already on disk
     _load_courses_from_canvas()
