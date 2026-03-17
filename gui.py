@@ -90,6 +90,12 @@ _ML_PACKAGES = [
     "httpx",
     "playwright",
     "canvasapi",
+    # PanoptoDownloader is not on PyPI; install from GitHub.
+    # Its declared version pins (requests~=2.27, tqdm~=4.62, yarl~=1.7) are
+    # conservative — newer versions work fine.
+    "ffmpeg-progress-yield",
+    "pycryptodomex",
+    "git+https://github.com/Panopto-Video-DL/Panopto-Video-DL-lib.git",
 ]
 
 
