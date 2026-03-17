@@ -237,6 +237,7 @@ def _get_panopto_tab_folder(course_id: int) -> tuple[str | None, list[dict], str
     Bearer token.
     Returns (folder_id, panopto_cookies, bearer_token).
     """
+    global PANOPTO_HOST  # may be auto-detected from Playwright request URLs
     from playwright.sync_api import sync_playwright
 
     r = requests.get(
@@ -251,9 +252,10 @@ def _get_panopto_tab_folder(course_id: int) -> tuple[str | None, list[dict], str
     if not launch_url:
         return None, [], None
 
-    folder_id:    str | None = None
-    bearer_token: str | None = None
-    cookies:      list[dict] = []
+    folder_id:      str | None = None
+    bearer_token:   str | None = None
+    detected_host:  str | None = None
+    cookies:        list[dict] = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -261,10 +263,17 @@ def _get_panopto_tab_folder(course_id: int) -> tuple[str | None, list[dict], str
         page    = ctx.new_page()
 
         def _on_request(req: object) -> None:
-            nonlocal folder_id, bearer_token
-            m = re.search(r"folderID=([0-9a-f-]{36})", req.url, re.IGNORECASE)
+            nonlocal folder_id, bearer_token, detected_host
+            url = req.url
+            m = re.search(r"folderID=([0-9a-f-]{36})", url, re.IGNORECASE)
             if m and folder_id is None:
                 folder_id = m.group(1)
+            # Auto-detect Panopto hostname from any Panopto request URL.
+            if detected_host is None and "panopto" in url.lower():
+                from urllib.parse import urlparse
+                netloc = urlparse(url).netloc
+                if netloc and "panopto" in netloc.lower():
+                    detected_host = netloc
             # Capture the OAuth Bearer token issued to the embedded page.
             # The WCF GetSessions endpoint requires it to return Subfolders.
             auth = req.headers.get("authorization", "")
@@ -277,10 +286,29 @@ def _get_panopto_tab_folder(course_id: int) -> tuple[str | None, list[dict], str
             time.sleep(3)
             cookies = [c for c in ctx.cookies()
                        if "panopto" in c.get("domain", "").lower()]
+            # Also try cookies domain as a fallback host source
+            if detected_host is None and cookies:
+                domain = cookies[0].get("domain", "").lstrip(".")
+                if domain:
+                    detected_host = domain
         except Exception as e:
             tqdm.write(f"  [warn] Playwright (Panopto tab) course {course_id}: {e}")
         finally:
             browser.close()
+
+    # Persist the detected host so all subsequent API calls use it.
+    if detected_host:
+        if not PANOPTO_HOST:
+            PANOPTO_HOST = detected_host
+            tqdm.write(f"  [info] Auto-detected PANOPTO_HOST: {PANOPTO_HOST}")
+            # Save to config so future sessions don't need to re-detect.
+            try:
+                cfg = json.load(open(_config_file)) if _config_file.exists() else {}
+                cfg["PANOPTO_HOST"] = PANOPTO_HOST
+                with open(_config_file, "w") as f:
+                    json.dump(cfg, f, indent=2)
+            except Exception:
+                pass
 
     return folder_id, cookies, bearer_token
 
@@ -379,6 +407,7 @@ def _find_panopto_in_pages(course) -> list[dict]:
     Scan Canvas Pages for embedded Panopto Viewer.aspx links.
     Returns video dicts for each unique session UUID found.
     """
+    global PANOPTO_HOST  # may be auto-detected from page bodies
     videos: list[dict] = []
     seen: set[str] = set()
 
@@ -388,6 +417,22 @@ def _find_panopto_in_pages(course) -> list[dict]:
             body = getattr(page, "body", "") or ""
             if "panopto" not in body.lower():
                 continue
+            # Auto-detect PANOPTO_HOST from embedded URLs if not yet known.
+            if not PANOPTO_HOST:
+                m = re.search(
+                    r"https?://([\w.-]*panopto[\w.-]*)/Panopto/",
+                    body, re.IGNORECASE,
+                )
+                if m:
+                    PANOPTO_HOST = m.group(1)
+                    tqdm.write(f"  [info] Auto-detected PANOPTO_HOST from page: {PANOPTO_HOST}")
+                    try:
+                        cfg = json.load(open(_config_file)) if _config_file.exists() else {}
+                        cfg["PANOPTO_HOST"] = PANOPTO_HOST
+                        with open(_config_file, "w") as f:
+                            json.dump(cfg, f, indent=2)
+                    except Exception:
+                        pass
             # Match ?id=UUID  (Viewer.aspx or Embed.aspx links)
             for uid in re.findall(
                 r"[?&]id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}"
