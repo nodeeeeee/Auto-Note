@@ -37,6 +37,15 @@ if getattr(_sys, "frozen", False) or PROJECT_DIR == _AUTO_NOTE_DIR / "scripts":
 else:
     DATA_DIR = PROJECT_DIR
 
+# Course output directory: defaults to DATA_DIR but can be overridden by
+# OUTPUT_DIR in config.json so files land in the user's chosen Output Dir.
+_ng_config: dict = (
+    json.loads((DATA_DIR / "config.json").read_text())
+    if (DATA_DIR / "config.json").exists() else {}
+)
+_out_dir = _ng_config.get("OUTPUT_DIR", "").strip()
+COURSE_DATA_DIR = Path(_out_dir) if _out_dir else DATA_DIR
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 DETAIL_LEVEL      = 7
@@ -1305,7 +1314,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.course:
-        course_dir  = DATA_DIR / args.course
+        course_dir  = COURSE_DATA_DIR / args.course
         course_name = args.course_name or f"CS{args.course}"
         lectures    = _discover_lectures(course_dir)
         if args.lectures:

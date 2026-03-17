@@ -46,6 +46,15 @@ if getattr(_sys, "frozen", False) or PROJECT_DIR == _AUTO_NOTE_DIR / "scripts":
 else:
     DATA_DIR = PROJECT_DIR
 
+# Course output directory: defaults to DATA_DIR but can be overridden by
+# OUTPUT_DIR in config.json so files land in the user's chosen Output Dir.
+_sa_config: dict = (
+    json.loads((DATA_DIR / "config.json").read_text())
+    if (DATA_DIR / "config.json").exists() else {}
+)
+_out_dir = _sa_config.get("OUTPUT_DIR", "").strip()
+COURSE_DATA_DIR = Path(_out_dir) if _out_dir else DATA_DIR
+
 # ── Tunable knobs ─────────────────────────────────────────────────────────────
 
 EMBED_MODEL   = "all-mpnet-base-v2"   # highest-quality general sentence model
@@ -1088,7 +1097,7 @@ def _content_match_slide_group(
 
 
 def process_course(course_id: int | str) -> None:
-    course_dir = DATA_DIR / str(course_id)
+    course_dir = COURSE_DATA_DIR / str(course_id)
     captions   = sorted((course_dir / "captions").glob("*.json"))
     all_slides = _candidate_slides(course_dir)
     out_dir    = course_dir / "alignment"

@@ -457,38 +457,91 @@ class OutputConsole:
         def _worker() -> None:
             rc = -1
             try:
-                env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+                import pty as _pty, io as _io
+                env = {**os.environ, "PYTHONUNBUFFERED": "1",
+                       "TERM": "xterm-256color", "COLUMNS": "100"}
+                master_fd, slave_fd = _pty.openpty()
                 state.proc = subprocess.Popen(
                     cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
+                    stdout=slave_fd, stderr=slave_fd,
+                    close_fds=True,
                     cwd=str(_get_output_dir()),
-                    bufsize=1,
                     env=env,
                 )
-                _last_update = time.monotonic()
-                _pending = False
-                for line in state.proc.stdout:
-                    stripped = line.strip()
-                    if stripped.startswith("<frozen importlib"):
-                        continue
-                    color = None
-                    low = stripped.lower()
-                    if low.startswith(("error", "traceback", "exception")):
-                        color = C_ERROR
-                    elif low.startswith("warning"):
-                        color = C_WARN
-                    _append_line(line.rstrip(), color)
-                    _pending = True
-                    now = time.monotonic()
-                    if now - _last_update >= _UPDATE_INTERVAL:
-                        self.page.update()
-                        _last_update = now
-                        _pending = False
+                os.close(slave_fd)
 
-                if _pending:
-                    self.page.update()
+                _MAX_LINES   = 500
+                _ANSI_RE     = re.compile(
+                    r"\x1b\[[0-9;]*[mABCDEFGHJKST]|\x1b\][^\x07]*\x07"
+                )
+                _last_update = time.monotonic()
+                buf          = ""   # current line being assembled
+
+                def _cur() -> ft.Text:
+                    """Return (or create) the last Text item — the live line."""
+                    if not self._lines.controls:
+                        t = ft.Text("", size=11, font_family=MONO,
+                                    color=_default_color, no_wrap=False,
+                                    selectable=True)
+                        self._lines.controls.append(t)
+                    return self._lines.controls[-1]
+
+                def _new_line() -> None:
+                    """Append a blank Text item; trim oldest if over cap."""
+                    self._lines.controls.append(
+                        ft.Text("", size=11, font_family=MONO,
+                                color=_default_color, no_wrap=False,
+                                selectable=True)
+                    )
+                    excess = len(self._lines.controls) - _MAX_LINES
+                    if excess > 0:
+                        del self._lines.controls[:excess]
+
+                try:
+                    with _io.open(master_fd, "rb", closefd=True) as master:
+                        while True:
+                            try:
+                                chunk = master.read(4096)
+                            except OSError:
+                                break
+                            if not chunk:
+                                break
+                            text = _ANSI_RE.sub(
+                                "", chunk.decode("utf-8", errors="replace")
+                            )
+                            for ch in text:
+                                if ch == "\r":
+                                    # Carriage return: next chars overwrite
+                                    # the current line — discard old buffer.
+                                    buf = ""
+                                elif ch == "\n":
+                                    if not buf.startswith("<frozen importlib"):
+                                        item = _cur()
+                                        item.value = buf
+                                        low = buf.lower().lstrip()
+                                        if low.startswith(
+                                                ("error", "traceback",
+                                                 "exception")):
+                                            item.color = C_ERROR
+                                        elif low.startswith("warning"):
+                                            item.color = C_WARN
+                                        _new_line()
+                                    buf = ""
+                                else:
+                                    buf += ch
+
+                            now = time.monotonic()
+                            if now - _last_update >= _UPDATE_INTERVAL:
+                                if buf:
+                                    _cur().value = buf
+                                self.page.update()
+                                _last_update = now
+                except OSError:
+                    pass
+
+                if buf:
+                    _cur().value = buf
+                self.page.update()
 
                 state.proc.wait()
                 rc = state.proc.returncode
@@ -791,14 +844,16 @@ def build_pipeline(page: ft.Page, console: OutputConsole) -> ft.Column:
         cmds: list[tuple[str, list[str]]] = []
         if "dl_material" in steps:
             c = [PYTHON, str(SCRIPTS["downloader"]),
-                 "--course", str(cid), "--download-material-all"]
+                 "--course", str(cid), "--download-material-all",
+                 "--path", str(_get_output_dir())]
             if secretly_sw.value:
                 c.append("--secretly")
             cmds.append(("Download materials", c))
 
         if "dl_video" in steps:
             c = [PYTHON, str(SCRIPTS["downloader"]),
-                 "--course", str(cid), "--download-video-all"]
+                 "--course", str(cid), "--download-video-all",
+                 "--path", str(_get_output_dir())]
             if secretly_sw.value:
                 c.append("--secretly")
             cmds.append(("Download videos", c))
@@ -886,7 +941,8 @@ def build_download(page: ft.Page, console: OutputConsole) -> ft.Column:
         return ["--secretly"] if secretly_sw.value else []
 
     def _go(extra: list[str]) -> None:
-        console.run([PYTHON, str(SCRIPTS["downloader"])]
+        console.run([PYTHON, str(SCRIPTS["downloader"]),
+                     "--path", str(_get_output_dir())]
                     + _course_args() + extra + _secretly_args())
 
     scroll_content = [
