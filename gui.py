@@ -475,6 +475,7 @@ class OutputConsole:
 
         def _worker() -> None:
             try:
+                env = {**os.environ, "PYTHONUNBUFFERED": "1"}
                 state.proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -482,12 +483,20 @@ class OutputConsole:
                     text=True,
                     cwd=str(_get_output_dir()),
                     bufsize=1,
+                    env=env,
                 )
                 for line in state.proc.stdout:
-                    # Filter out frozen importlib noise
-                    if "<frozen importlib" in line or "OpenSSL 3" in line:
+                    # Filter only the noisiest frozen-importlib bootstrap lines
+                    stripped = line.strip()
+                    if stripped.startswith("<frozen importlib"):
                         continue
-                    _line_q.put((line.rstrip(), None))
+                    color = None
+                    low = stripped.lower()
+                    if low.startswith(("error", "traceback", "exception")):
+                        color = C_ERROR
+                    elif low.startswith("warning"):
+                        color = C_WARN
+                    _line_q.put((line.rstrip(), color))
                 state.proc.wait()
                 rc = state.proc.returncode
 
@@ -1753,6 +1762,8 @@ def build_settings(page: ft.Page,
             _snack("Errors: " + "; ".join(errors), ok=False)
         else:
             _snack("All settings saved successfully!")
+            # Auto-refresh courses after saving so the user sees results immediately
+            threading.Thread(target=_do_refresh, daemon=True).start()
 
     save_btn = ft.FilledButton(
         "Save All Settings",

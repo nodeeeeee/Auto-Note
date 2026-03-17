@@ -168,6 +168,7 @@ def _find_panopto_items(canvas: Canvas, course) -> list[dict]:
             videos.append(v)
 
     # ── Strategy 1: module ExternalTool items ─────────────────────────────────
+    s1_count = 0
     try:
         for module in course.get_modules():
             for item in module.get_module_items():
@@ -180,16 +181,21 @@ def _find_panopto_items(canvas: Canvas, course) -> list[dict]:
                             "module_name": module.name,
                             "title":       item.title,
                             "lti_url":     url,
-                            "item_id":     item.id,   # integer Canvas item ID
-                            "viewer_url":  None,       # resolved via LTI launch
+                            "item_id":     item.id,
+                            "viewer_url":  None,
                         })
+                        s1_count += 1
     except Exception as e:
-        tqdm.write(f"  [warn] modules scan {course.id}: {e}")
+        tqdm.write(f"  [warn] Strategy 1 (modules) {course.id}: {e}")
+    tqdm.write(f"  [info] Strategy 1 (modules):      {s1_count} video(s)")
 
     # ── Strategy 2: Panopto folder API (Videos/Panopto tab) ───────────────────
+    s2_count = 0
     try:
+        tqdm.write(f"  [info] Strategy 2 (Panopto tab): launching browser…")
         folder_id, panopto_cookies, bearer_token = _get_panopto_tab_folder(course.id)
         if folder_id:
+            tqdm.write(f"  [info] Strategy 2: folder_id={folder_id}, scanning…")
             for s in _iter_panopto_folder(folder_id, panopto_cookies, bearer_token=bearer_token):
                 viewer_url = (f"https://{PANOPTO_HOST}/Panopto/Pages/Viewer.aspx"
                               f"?id={s['session_id']}")
@@ -199,24 +205,27 @@ def _find_panopto_items(canvas: Canvas, course) -> list[dict]:
                     "module_name": s.get("folder_name", "Videos/Panopto"),
                     "title":       s["name"],
                     "lti_url":     None,
-                    "item_id":     s["session_id"],   # UUID string used as key
+                    "item_id":     s["session_id"],
                     "viewer_url":  viewer_url,
                     "_panopto_cookies": panopto_cookies,
                 })
+                s2_count += 1
+        else:
+            tqdm.write(f"  [warn] Strategy 2: could not find Panopto folder (browser may have failed)")
     except Exception as e:
-        tqdm.write(f"  [warn] Panopto folder scan {course.id}: {e}")
+        tqdm.write(f"  [warn] Strategy 2 (Panopto folder) {course.id}: {e}")
+    tqdm.write(f"  [info] Strategy 2 (Panopto tab):   {s2_count} video(s)")
 
     # ── Strategy 3: Canvas Pages scan (fallback only) ─────────────────────────
-    # Only run if strategies 1+2 found nothing.  Pages embed Panopto using
-    # delivery/embed IDs that differ from SessionIDs and cannot be resolved
-    # as standalone sessions, so we avoid false entries when the folder API
-    # already provides complete coverage.
     if not videos:
+        tqdm.write(f"  [info] Strategy 3 (pages scan):   trying…")
         try:
+            s3_before = len(videos)
             for v in _find_panopto_in_pages(course):
                 _add(v)
+            tqdm.write(f"  [info] Strategy 3 (pages scan):   {len(videos) - s3_before} video(s)")
         except Exception as e:
-            tqdm.write(f"  [warn] pages scan {course.id}: {e}")
+            tqdm.write(f"  [warn] Strategy 3 (pages scan) {course.id}: {e}")
 
     return videos
 
@@ -305,46 +314,59 @@ def _iter_panopto_folder(
     if bearer_token:
         headers["Authorization"] = f"Bearer {bearer_token}"
 
-    results: list[dict] = []
+    results:    list[dict] = []
+    subfolders: list[dict] = []   # collected from first page (getFolderData)
+    PAGE_SIZE = 250
+    start_idx = 0
 
-    r = _sess.post(
-        f"https://{PANOPTO_HOST}/Panopto/Services/Data.svc/GetSessions",
-        json={"queryParameters": {
-            "folderID":                   folder_id,
-            "startIndex":                 0,
-            "maxResults":                 500,
-            "sortColumn":                 1,
-            "sortAscending":              True,
-            "getFolderData":              True,   # required to get Subfolders list
-            "includeArchived":            True,
-            "includePlaylists":           True,
-            "includePlaceholderSessions": False,
-        }},
-        headers=headers,
-        timeout=30,
-    )
-    if r.status_code != 200:
-        return results
+    while True:
+        r = _sess.post(
+            f"https://{PANOPTO_HOST}/Panopto/Services/Data.svc/GetSessions",
+            json={"queryParameters": {
+                "folderID":                   folder_id,
+                "startIndex":                 start_idx,
+                "maxResults":                 PAGE_SIZE,
+                "sortColumn":                 1,
+                "sortAscending":              True,
+                "getFolderData":              start_idx == 0,  # only needed on first page
+                "includeArchived":            True,
+                "includePlaylists":           True,
+                "includePlaceholderSessions": False,
+            }},
+            headers=headers,
+            timeout=30,
+        )
+        if r.status_code != 200:
+            tqdm.write(f"  [warn] GetSessions HTTP {r.status_code} for folder {folder_id}")
+            break
 
-    d = r.json().get("d") or {}
+        d = r.json().get("d") or {}
+        page_results = d.get("Results") or []
 
-    for s in d.get("Results") or []:
-        # DeliveryID is what Viewer.aspx and DeliveryInfo.aspx use for streaming.
-        # SessionID is the internal DB identifier and does NOT work with DeliveryInfo.
-        sid      = s.get("DeliveryID") or s.get("SessionID")
-        name     = s.get("SessionName", "")
-        duration = s.get("Duration")        # None/0 → navigation placeholder, not a video
-        if sid and name and duration:
-            results.append({
-                "session_id":  sid,
-                "name":        name,
-                "folder_name": folder_name,
-            })
+        for s in page_results:
+            sid  = s.get("DeliveryID") or s.get("SessionID")
+            name = s.get("SessionName", "")
+            if sid and name:
+                results.append({
+                    "session_id":  sid,
+                    "name":        name,
+                    "folder_name": folder_name,
+                })
 
-    for sf in d.get("Subfolders") or []:
+        if start_idx == 0:
+            subfolders = d.get("Subfolders") or []
+
+        start_idx += len(page_results)
+        total = d.get("TotalNumberOfResults") or 0
+        if not page_results or start_idx >= total:
+            break
+
+    # Recurse into subfolders
+    for sf in subfolders:
         sf_id   = sf.get("ID") or sf.get("FolderID") or sf.get("Id")
         sf_name = sf.get("Name") or folder_name
         if sf_id:
+            tqdm.write(f"  [info] Scanning subfolder: {sf_name}")
             results.extend(
                 _iter_panopto_folder(sf_id, cookies, sf_name, bearer_token, _sess)
             )
