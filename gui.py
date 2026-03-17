@@ -51,7 +51,7 @@ def _install_scripts() -> None:
     SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
     for fname in [
         "downloader.py", "extract_caption.py",
-        "semantic_alignment.py", "note_generation.py",
+        "semantic_alignment.py", "alignment_parser.py", "note_generation.py",
     ]:
         src = PROJECT_DIR / fname
         dst = SCRIPTS_DIR / fname

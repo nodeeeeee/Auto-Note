@@ -1234,6 +1234,10 @@ def _discover_lectures(course_dir: Path) -> list[LectureData]:
     ]
 
     mat_dir = course_dir / "materials"
+    if not mat_dir.exists():
+        print(f"[error] Materials directory not found: {mat_dir}")
+        print("  Run 'Download materials' first before generating notes.")
+        sys.exit(1)
     lecture_subdir: Path | None = None
     for name in _LECTURE_SUBDIRS:
         candidate = mat_dir / name
