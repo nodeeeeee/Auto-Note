@@ -122,6 +122,29 @@ def _load_python_from_config() -> None:
         PYTHON = ML_VENV_PYTHON
 
 
+OUTPUT_DIR: Path = Path.home() / "AutoNote"
+
+
+def _load_output_dir_from_config() -> None:
+    """Load user-configured output directory from config.json."""
+    global OUTPUT_DIR
+    config_file = DATA_DIR / "config.json"
+    if config_file.exists():
+        try:
+            cfg = json.load(open(config_file))
+            p = cfg.get("OUTPUT_DIR", "").strip()
+            if p:
+                OUTPUT_DIR = Path(p)
+        except Exception:
+            pass
+
+
+def _get_output_dir() -> Path:
+    """Return current output directory, creating it if needed."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    return OUTPUT_DIR
+
+
 COURSES: dict[int, str] = {}   # populated from Canvas API after token is entered
 
 _SKIP_KEYWORDS = [
@@ -434,7 +457,7 @@ class OutputConsole:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
-                    cwd=PROJECT_DIR,
+                    cwd=str(_get_output_dir()),
                     bufsize=1,
                 )
                 for line in state.proc.stdout:
@@ -1174,6 +1197,7 @@ def build_settings(page: ft.Page,
         "canvas_url":  _cfg.get("CANVAS_URL", ""),
         "panopto":     _cfg.get("PANOPTO_HOST", ""),
         "python_path": _cfg.get("PYTHON_PATH", ""),
+        "output_dir":  _cfg.get("OUTPUT_DIR",  str(Path.home() / "AutoNote")),
         "canvas":      canvas_file.read_text().strip() if canvas_file.exists() else "",
         "openai":      openai_file.read_text().strip() if openai_file.exists() else "",
         "anthropic":   anthropic_file.read_text().strip() if anthropic_file.exists() else "",
@@ -1195,6 +1219,9 @@ def build_settings(page: ft.Page,
         expand=True, dense=True, bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12)
     tf_python_path = _mk_tf("python_path",
         hint_text="/path/to/conda/envs/auto-note/bin/python  (leave blank for system python3)",
+        expand=True, dense=True, bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12)
+    tf_output_dir = _mk_tf("output_dir",
+        hint_text="Output directory for all pipeline files (default: ~/AutoNote)",
         expand=True, dense=True, bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12)
     tf_canvas = _mk_tf("canvas",
         password=True, can_reveal_password=True,
@@ -1222,6 +1249,7 @@ def build_settings(page: ft.Page,
         _field_row("Canvas URL",   tf_canvas_url),
         _field_row("Panopto Host", tf_panopto),
         _field_row("Python Path",  tf_python_path),
+        _field_row("Output Dir",   tf_output_dir),
     ], spacing=10))
 
     refresh_status = ft.Text("", size=11,
@@ -1238,6 +1266,7 @@ def build_settings(page: ft.Page,
                 "CANVAS_URL":   _v["canvas_url"].strip(),
                 "PANOPTO_HOST": _v["panopto"].strip(),
                 "PYTHON_PATH":  _v["python_path"].strip(),
+                "OUTPUT_DIR":   _v["output_dir"].strip(),
             })
             if _v["canvas"].strip():
                 canvas_file.write_text(_v["canvas"].strip())
@@ -1669,9 +1698,14 @@ def build_settings(page: ft.Page,
                 "CANVAS_URL":   _v["canvas_url"].strip(),
                 "PANOPTO_HOST": _v["panopto"].strip(),
                 "PYTHON_PATH":  _v["python_path"].strip(),
+                "OUTPUT_DIR":   _v["output_dir"].strip(),
             })
             p = _v["python_path"].strip()
             PYTHON = p if p else _DEFAULT_PYTHON
+            global OUTPUT_DIR
+            od = _v["output_dir"].strip()
+            if od:
+                OUTPUT_DIR = Path(od)
         except Exception as e:
             errors.append(f"Connection: {e}")
         for path, key in [
@@ -1738,16 +1772,233 @@ def build_settings(page: ft.Page,
 
 # ── Main app ──────────────────────────────────────────────────────────────────
 
-def main(page: ft.Page) -> None:
-    page.title      = "AUTO NOTE"
-    page.theme_mode = ft.ThemeMode.DARK
-    page.bgcolor    = C_SURFACE
-    page.theme      = ft.Theme(color_scheme_seed=ft.Colors.CYAN)
-    page.window.width      = 1080
-    page.window.height     = 780
-    page.window.min_width  = 720
-    page.window.min_height = 520
-    page.padding = 0
+def _show_installer(page: ft.Page) -> None:
+    """Full-screen first-run setup wizard shown when venv is not yet installed."""
+
+    def _on_install_complete() -> None:
+        """Called by the installer after the venv is ready; launches main UI."""
+        page.controls.clear()
+        _load_python_from_config()
+        _load_output_dir_from_config()
+        _load_courses_from_canvas()
+        _show_main_app(page)
+
+    # ── Log area ──────────────────────────────────────────────────────────
+    inst_log = ft.TextField(
+        value="", multiline=True, read_only=True, min_lines=4, max_lines=18,
+        text_size=11, bgcolor=C_OUTPUT_BG,
+        border_color=ft.Colors.TRANSPARENT,
+        color=ft.Colors.with_opacity(0.85, ft.Colors.WHITE),
+        expand=True,
+    )
+    inst_status = ft.Text("Ready to install.", size=12, color=C_PRIMARY)
+    inst_btn = ft.FilledButton(
+        "Install ML Environment",
+        icon=ft.Icons.DOWNLOAD_OUTLINED,
+        style=ft.ButtonStyle(bgcolor=C_SECONDARY, color=ft.Colors.BLACK),
+    )
+
+    _base_py_v2 = {"v": ""}
+    tf_base_py2 = ft.TextField(
+        hint_text="Python path (auto-detected — paste here only if auto-detect fails)",
+        expand=True, dense=True, bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY,
+        text_size=11, visible=False,
+        on_change=lambda e: _base_py_v2.update({"v": e.control.value}),
+    )
+
+    def _append(line: str) -> None:
+        inst_log.value = (inst_log.value or "") + line + "\n"
+        page.update()
+
+    def _run_install(_=None) -> None:
+        inst_btn.disabled = True
+        inst_status.value = "Installing…"
+        inst_status.color = C_WARN
+        page.update()
+
+        def _worker():
+            import shutil as _sh
+            home = Path.home()
+            base_py = _base_py_v2["v"].strip()
+
+            if not base_py:
+                _append("► Probing login shell for Python …")
+                for shell_cmd in [
+                    ["bash", "-l", "-c",
+                     "python3 -c 'import ssl,venv,sys; print(sys.executable)'"],
+                    ["zsh", "-l", "-c",
+                     "python3 -c 'import ssl,venv,sys; print(sys.executable)'"],
+                ]:
+                    try:
+                        r = subprocess.run(shell_cmd, capture_output=True,
+                                           text=True, timeout=15)
+                        if r.returncode == 0:
+                            for line in reversed(r.stdout.strip().splitlines()):
+                                line = line.strip()
+                                if line and Path(line).exists():
+                                    base_py = line
+                                    break
+                        if base_py:
+                            break
+                    except Exception:
+                        pass
+
+            if not base_py:
+                for cand in [
+                    str(home / "miniconda3/bin/python3"),
+                    str(home / "miniconda3/bin/python"),
+                    str(home / "anaconda3/bin/python3"),
+                    str(home / "anaconda3/bin/python"),
+                    str(home / "miniforge3/bin/python3"),
+                    str(home / "miniforge3/bin/python"),
+                    str(home / "mambaforge/bin/python3"),
+                    str(home / "mambaforge/bin/python"),
+                    str(home / ".local/share/mamba/bin/python3"),
+                    "/opt/conda/bin/python3",
+                    "/opt/miniconda3/bin/python3",
+                    "/opt/anaconda3/bin/python3",
+                    _sh.which("python3") or "",
+                    _sh.which("python") or "",
+                    "/usr/bin/python3",
+                    "/usr/local/bin/python3",
+                ]:
+                    if not cand or not Path(cand).exists():
+                        continue
+                    r = subprocess.run([cand, "-c", "import ssl, venv"],
+                                       capture_output=True, timeout=5)
+                    if r.returncode == 0:
+                        base_py = cand
+                        break
+
+            if not base_py:
+                _append("ERROR: No Python 3 with SSL support found.")
+                _append("  Paste your Python path in the field below and click Install again.")
+                tf_base_py2.visible = True
+                inst_status.value = "✗ Python not found — enter path below"
+                inst_status.color = C_ERROR
+                inst_btn.disabled = False
+                page.update()
+                return
+
+            _append(f"► Using Python: {base_py}")
+
+            import shutil as _sh2
+            if ML_VENV_DIR.exists():
+                _append("► Removing old venv …")
+                _sh2.rmtree(str(ML_VENV_DIR))
+            _append(f"► Creating venv at {ML_VENV_DIR} …")
+            r = subprocess.run([base_py, "-m", "venv", str(ML_VENV_DIR)],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                _append("STDERR: " + r.stderr.strip())
+                _append("ERROR: venv creation failed.")
+                inst_status.value = "✗ Setup failed"
+                inst_status.color = C_ERROR
+                inst_btn.disabled = False
+                page.update()
+                return
+            _append("  venv created.")
+
+            pip = str(ML_VENV_DIR / (
+                "Scripts/pip.exe" if sys.platform == "win32" else "bin/pip"
+            ))
+            _append("► Upgrading pip …")
+            subprocess.run([pip, "install", "--upgrade", "pip"],
+                           capture_output=True, text=True)
+
+            cuda = _detect_cuda()
+            idx = _torch_index_url(cuda)
+            if cuda:
+                _append(f"► CUDA {cuda[0]}.{cuda[1]} detected — installing torch (GPU) …")
+            else:
+                _append("► No GPU detected — installing torch (CPU) …")
+            torch_cmd = [pip, "install", "torch"]
+            if idx:
+                torch_cmd += ["--index-url", idx]
+            proc = subprocess.Popen(torch_cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True)
+            for line in proc.stdout:
+                _append(line.rstrip())
+            proc.wait()
+
+            _append("► Installing ML packages …")
+            proc = subprocess.Popen([pip, "install"] + _ML_PACKAGES,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True)
+            for line in proc.stdout:
+                _append(line.rstrip())
+            proc.wait()
+
+            _append("► Installing Playwright browsers …")
+            proc = subprocess.Popen(
+                [ML_VENV_PYTHON, "-m", "playwright", "install", "chromium"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            for line in proc.stdout:
+                _append(line.rstrip())
+            proc.wait()
+
+            global PYTHON
+            PYTHON = ML_VENV_PYTHON
+            _append("\n✓ Installation complete!")
+            inst_status.value = "✓ Done — launching app…"
+            inst_status.color = C_SUCCESS
+            inst_btn.disabled = False
+            page.update()
+            import time as _t; _t.sleep(1)
+            _on_install_complete()
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    inst_btn.on_click = _run_install
+
+    page.add(
+        ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.Container(height=40),
+                    ft.Row(
+                        controls=[ft.Icon(ft.Icons.AUTO_AWESOME, color=C_PRIMARY, size=32),
+                                  ft.Text("AUTO NOTE", size=28,
+                                          weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE)],
+                        alignment=ft.MainAxisAlignment.CENTER, spacing=12,
+                    ),
+                    ft.Container(height=8),
+                    ft.Text(
+                        "First-time setup: install the ML environment to get started.",
+                        size=13, color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE),
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                    ft.Container(height=24),
+                    _card(ft.Column(controls=[
+                        ft.Text("ML Environment Setup", size=14,
+                                weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                        ft.Text(
+                            "This will create ~/.auto_note/venv/ and install torch, "
+                            "faster-whisper, sentence-transformers and all pipeline "
+                            "dependencies. Internet connection required. Takes ~5 min.",
+                            size=11,
+                            color=ft.Colors.with_opacity(0.55, ft.Colors.WHITE),
+                        ),
+                        ft.Container(height=6),
+                        ft.Row(controls=[inst_status], spacing=8),
+                        inst_btn,
+                        tf_base_py2,
+                        ft.Container(content=inst_log, expand=True),
+                    ], spacing=10)),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                scroll=ft.ScrollMode.AUTO,
+                expand=True,
+            ),
+            expand=True,
+            padding=ft.Padding.symmetric(horizontal=80, vertical=0),
+        )
+    )
+    page.update()
+
+
+def _show_main_app(page: ft.Page) -> None:
+    """Build and display the full navigation shell (called after install or on normal launch)."""
 
     # One shared console per session (preserves history across page switches)
     console = OutputConsole(page)
@@ -1773,12 +2024,6 @@ def main(page: ft.Page) -> None:
             build_settings(page,
                            on_courses_changed=lambda: _rebuild_ref[0] and _rebuild_ref[0]()),
         ]
-
-    # Load user-configured Python interpreter (e.g. conda env) from config
-    _load_python_from_config()
-
-    # Try to populate courses immediately if credentials are already on disk
-    _load_courses_from_canvas()
 
     pages = _build_pages()
 
@@ -1889,6 +2134,32 @@ def main(page: ft.Page) -> None:
             spacing=0,
         )
     )
+    page.update()
+
+
+def main(page: ft.Page) -> None:
+    page.title      = "AUTO NOTE"
+    page.theme_mode = ft.ThemeMode.DARK
+    page.bgcolor    = C_SURFACE
+    page.theme      = ft.Theme(color_scheme_seed=ft.Colors.CYAN)
+    page.window.width      = 1080
+    page.window.height     = 780
+    page.window.min_width  = 720
+    page.window.min_height = 520
+    page.padding = 0
+
+    # Load user-configured settings from config
+    _load_python_from_config()
+    _load_output_dir_from_config()
+
+    # ── First-run installer ────────────────────────────────────────────────
+    if not Path(ML_VENV_PYTHON).exists():
+        _show_installer(page)
+        return
+
+    # Try to populate courses immediately if credentials are already on disk
+    _load_courses_from_canvas()
+    _show_main_app(page)
 
 
 if __name__ == "__main__":
