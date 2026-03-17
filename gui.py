@@ -449,6 +449,7 @@ class OutputConsole:
                 )
 
         def _worker() -> None:
+            rc = -1
             try:
                 env = {**os.environ, "PYTHONUNBUFFERED": "1"}
                 state.proc = subprocess.Popen(
@@ -490,7 +491,7 @@ class OutputConsole:
                     _append_line("\n✓  Completed successfully.", C_SUCCESS)
                     self.set_status("✓ done", C_SUCCESS)
                 elif rc == -15:
-                    pass
+                    pass  # user stopped it
                 else:
                     _append_line(f"\n✗  Exited with code {rc}.", C_ERROR)
                     self.set_status(f"✗ code {rc}", C_ERROR)
@@ -502,7 +503,9 @@ class OutputConsole:
                 state.proc             = None
                 self._stop_btn.visible = False
                 self.page.update()
-                if on_done:
+                # Only advance the pipeline chain when the step succeeded.
+                # On failure rc != 0 — stop the chain so the user sees the error.
+                if on_done and rc == 0:
                     on_done()
         threading.Thread(target=_worker, daemon=True).start()
 
