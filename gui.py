@@ -35,7 +35,10 @@ if Path(ML_VENV_PYTHON).exists():
     PYTHON = ML_VENV_PYTHON
 elif getattr(sys, "frozen", False):
     import shutil as _shutil
-    PYTHON = _shutil.which("python3") or _shutil.which("python") or "python3"
+    if sys.platform == "win32":
+        PYTHON = _shutil.which("python") or "python"
+    else:
+        PYTHON = _shutil.which("python3") or _shutil.which("python") or "python3"
 else:
     PYTHON = sys.executable
 
@@ -111,6 +114,88 @@ _ML_PACKAGES = [
     "pycryptodomex",
     "git+https://github.com/Panopto-Video-DL/Panopto-Video-DL-lib.git",
 ]
+
+
+def _find_base_python(log_fn: callable) -> str:
+    """Find a Python 3 with ssl+venv support.
+
+    Tries (in order):
+      1. Login-shell probe via bash/zsh (Unix only)
+      2. Common conda/system install locations (platform-specific)
+    Returns the executable path or '' if nothing is found.
+    """
+    import shutil as _sh
+    home = Path.home()
+
+    # 1) Login shell probe — bash/zsh don't exist on Windows
+    if sys.platform != "win32":
+        log_fn("► Probing login shell for Python …")
+        for shell_cmd in [
+            ["bash", "-l", "-c",
+             "python3 -c 'import ssl,venv,sys; print(sys.executable)'"],
+            ["zsh",  "-l", "-c",
+             "python3 -c 'import ssl,venv,sys; print(sys.executable)'"],
+        ]:
+            try:
+                r = subprocess.run(shell_cmd, capture_output=True,
+                                   text=True, timeout=15)
+                if r.returncode == 0:
+                    for line in reversed(r.stdout.strip().splitlines()):
+                        line = line.strip()
+                        if line and Path(line).exists():
+                            return line
+            except Exception:
+                pass
+
+    # 2) Common install locations (platform-specific)
+    if sys.platform == "win32":
+        _candidates = [
+            str(home / "miniconda3"  / "python.exe"),
+            str(home / "Miniconda3"  / "python.exe"),
+            str(home / "anaconda3"   / "python.exe"),
+            str(home / "Anaconda3"   / "python.exe"),
+            str(home / "miniforge3"  / "python.exe"),
+            str(home / "mambaforge"  / "python.exe"),
+            # Standard Windows Python installer locations
+            str(home / "AppData" / "Local" / "Programs" / "Python" / "Python313" / "python.exe"),
+            str(home / "AppData" / "Local" / "Programs" / "Python" / "Python312" / "python.exe"),
+            str(home / "AppData" / "Local" / "Programs" / "Python" / "Python311" / "python.exe"),
+            str(home / "AppData" / "Local" / "Programs" / "Python" / "Python310" / "python.exe"),
+            str(Path("C:/miniconda3/python.exe")),
+            str(Path("C:/anaconda3/python.exe")),
+            str(Path("C:/ProgramData/miniconda3/python.exe")),
+            str(Path("C:/ProgramData/anaconda3/python.exe")),
+            _sh.which("python") or "",
+        ]
+    else:
+        _candidates = [
+            str(home / "miniconda3/bin/python3"),
+            str(home / "miniconda3/bin/python"),
+            str(home / "anaconda3/bin/python3"),
+            str(home / "anaconda3/bin/python"),
+            str(home / "miniforge3/bin/python3"),
+            str(home / "miniforge3/bin/python"),
+            str(home / "mambaforge/bin/python3"),
+            str(home / "mambaforge/bin/python"),
+            str(home / ".local/share/mamba/bin/python3"),
+            "/opt/conda/bin/python3",
+            "/opt/miniconda3/bin/python3",
+            "/opt/anaconda3/bin/python3",
+            _sh.which("python3") or "",
+            _sh.which("python") or "",
+            "/usr/bin/python3",
+            "/usr/local/bin/python3",
+        ]
+
+    for cand in _candidates:
+        if not cand or not Path(cand).exists():
+            continue
+        r = subprocess.run([cand, "-c", "import ssl, venv"],
+                           capture_output=True, timeout=5)
+        if r.returncode == 0:
+            return cand
+
+    return ""
 
 
 def _detect_cuda() -> tuple[int, int] | None:
@@ -1485,69 +1570,22 @@ def build_settings(page: ft.Page,
             global PYTHON
 
             # ── Find a Python that has SSL (required for pip HTTPS) ──────────
-            import shutil as _sh
-            home = Path.home()
-
             # 1) Manual override from the text field
             base_py = _base_py_v["v"].strip()
 
-            # 2) Login shell — respects .bashrc/.zshrc and conda init
+            # 2) Auto-detect via login shell + common install locations
             if not base_py:
-                _append_log("► Probing login shell for Python …")
-                for shell_cmd in [
-                    ["bash", "-l", "-c",
-                     "python3 -c 'import ssl,venv,sys; print(sys.executable)'"],
-                    ["zsh",  "-l", "-c",
-                     "python3 -c 'import ssl,venv,sys; print(sys.executable)'"],
-                ]:
-                    try:
-                        r = subprocess.run(shell_cmd, capture_output=True,
-                                           text=True, timeout=15)
-                        if r.returncode == 0:
-                            for line in reversed(r.stdout.strip().splitlines()):
-                                line = line.strip()
-                                if line and Path(line).exists():
-                                    base_py = line
-                                    break
-                        if base_py:
-                            break
-                    except Exception:
-                        pass
-
-            # 3) Common install locations
-            if not base_py:
-                _candidates = [
-                    str(home / "miniconda3/bin/python3"),
-                    str(home / "miniconda3/bin/python"),
-                    str(home / "anaconda3/bin/python3"),
-                    str(home / "anaconda3/bin/python"),
-                    str(home / "miniforge3/bin/python3"),
-                    str(home / "miniforge3/bin/python"),
-                    str(home / "mambaforge/bin/python3"),
-                    str(home / "mambaforge/bin/python"),
-                    str(home / ".local/share/mamba/bin/python3"),
-                    "/opt/conda/bin/python3",
-                    "/opt/miniconda3/bin/python3",
-                    "/opt/anaconda3/bin/python3",
-                    _sh.which("python3") or "",
-                    _sh.which("python") or "",
-                    "/usr/bin/python3",
-                    "/usr/local/bin/python3",
-                ]
-                for cand in _candidates:
-                    if not cand or not Path(cand).exists():
-                        continue
-                    r = subprocess.run([cand, "-c", "import ssl, venv"],
-                                       capture_output=True, timeout=5)
-                    if r.returncode == 0:
-                        base_py = cand
-                        break
+                base_py = _find_base_python(_append_log)
 
             if not base_py:
                 _append_log("ERROR: Could not find a Python 3 with SSL support.")
                 _append_log("")
-                _append_log("  Paste the path to your conda/system Python below")
-                _append_log("  (e.g. /home/user/miniconda3/bin/python3)")
+                if sys.platform == "win32":
+                    _append_log("  Paste the path to your Python below")
+                    _append_log(r"  (e.g. C:\Users\you\miniconda3\python.exe)")
+                else:
+                    _append_log("  Paste the path to your conda/system Python below")
+                    _append_log("  (e.g. /home/user/miniconda3/bin/python3)")
                 _append_log("  then click Install again.")
                 tf_base_py.visible = True
                 env_status.value = "✗ Python not found — enter path below"
@@ -1947,62 +1985,18 @@ def _show_installer(page: ft.Page) -> None:
         page.update()
 
         def _worker():
-            import shutil as _sh
-            home = Path.home()
             base_py = _base_py_v2["v"].strip()
 
             if not base_py:
-                _append("► Probing login shell for Python …")
-                for shell_cmd in [
-                    ["bash", "-l", "-c",
-                     "python3 -c 'import ssl,venv,sys; print(sys.executable)'"],
-                    ["zsh", "-l", "-c",
-                     "python3 -c 'import ssl,venv,sys; print(sys.executable)'"],
-                ]:
-                    try:
-                        r = subprocess.run(shell_cmd, capture_output=True,
-                                           text=True, timeout=15)
-                        if r.returncode == 0:
-                            for line in reversed(r.stdout.strip().splitlines()):
-                                line = line.strip()
-                                if line and Path(line).exists():
-                                    base_py = line
-                                    break
-                        if base_py:
-                            break
-                    except Exception:
-                        pass
-
-            if not base_py:
-                for cand in [
-                    str(home / "miniconda3/bin/python3"),
-                    str(home / "miniconda3/bin/python"),
-                    str(home / "anaconda3/bin/python3"),
-                    str(home / "anaconda3/bin/python"),
-                    str(home / "miniforge3/bin/python3"),
-                    str(home / "miniforge3/bin/python"),
-                    str(home / "mambaforge/bin/python3"),
-                    str(home / "mambaforge/bin/python"),
-                    str(home / ".local/share/mamba/bin/python3"),
-                    "/opt/conda/bin/python3",
-                    "/opt/miniconda3/bin/python3",
-                    "/opt/anaconda3/bin/python3",
-                    _sh.which("python3") or "",
-                    _sh.which("python") or "",
-                    "/usr/bin/python3",
-                    "/usr/local/bin/python3",
-                ]:
-                    if not cand or not Path(cand).exists():
-                        continue
-                    r = subprocess.run([cand, "-c", "import ssl, venv"],
-                                       capture_output=True, timeout=5)
-                    if r.returncode == 0:
-                        base_py = cand
-                        break
+                base_py = _find_base_python(_append)
 
             if not base_py:
                 _append("ERROR: No Python 3 with SSL support found.")
-                _append("  Paste your Python path in the field below and click Install again.")
+                if sys.platform == "win32":
+                    _append(r"  Paste your Python path below (e.g. C:\Users\you\miniconda3\python.exe)")
+                else:
+                    _append("  Paste your Python path below (e.g. /home/user/miniconda3/bin/python3)")
+                _append("  then click Install again.")
                 tf_base_py2.visible = True
                 inst_status.value = "✗ Python not found — enter path below"
                 inst_status.color = C_ERROR
