@@ -22,7 +22,18 @@ import flet as ft
 # ── Project layout ────────────────────────────────────────────────────────────
 
 PROJECT_DIR = Path(__file__).parent
-if getattr(sys, "frozen", False):
+
+# The ML venv is always at ~/.auto_note/venv/ regardless of frozen/dev mode.
+# (The installer creates it there; dev mode uses it directly.)
+_VENV_SUBPATH = "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+ML_VENV_DIR    = Path.home() / ".auto_note" / "venv"
+ML_VENV_PYTHON = str(ML_VENV_DIR / _VENV_SUBPATH)
+
+# Initial Python: prefer the managed venv if already installed; otherwise
+# fall back to sys.executable (dev mode) or system python3 (frozen/AppImage).
+if Path(ML_VENV_PYTHON).exists():
+    PYTHON = ML_VENV_PYTHON
+elif getattr(sys, "frozen", False):
     import shutil as _shutil
     PYTHON = _shutil.which("python3") or _shutil.which("python") or "python3"
 else:
@@ -38,8 +49,8 @@ else:
     DATA_DIR = PROJECT_DIR
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Pipeline scripts are installed to ~/.auto_note/scripts/ so they run from a
-# persistent location instead of the temporary AppImage mount under /tmp.
+# Pipeline scripts are installed to ~/.auto_note/scripts/ in AppImage mode.
+# In dev mode the scripts live directly in PROJECT_DIR (no scripts/ subdir).
 SCRIPTS_DIR = DATA_DIR / "scripts"
 
 
@@ -59,19 +70,22 @@ def _install_scripts() -> None:
             _sh.copy2(str(src), str(dst))
 
 
+def _script(name: str) -> Path:
+    """Return the path to a pipeline script, falling back to PROJECT_DIR in dev mode."""
+    installed = SCRIPTS_DIR / name
+    if installed.exists():
+        return installed
+    return PROJECT_DIR / name   # dev mode: scripts are in the project root
+
+
 SCRIPTS = {
-    "downloader": SCRIPTS_DIR / "downloader.py",
-    "transcribe": SCRIPTS_DIR / "extract_caption.py",
-    "align":      SCRIPTS_DIR / "semantic_alignment.py",
-    "generate":   SCRIPTS_DIR / "note_generation.py",
+    "downloader": _script("downloader.py"),
+    "transcribe": _script("extract_caption.py"),
+    "align":      _script("semantic_alignment.py"),
+    "generate":   _script("note_generation.py"),
 }
 
 _DEFAULT_PYTHON = PYTHON   # auto-detected fallback; may be overridden by user config
-
-ML_VENV_DIR    = DATA_DIR / "venv"
-ML_VENV_PYTHON = str(ML_VENV_DIR / (
-    "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
-))
 
 # ML packages needed by the pipeline scripts (GUI requirements are bundled separately)
 _ML_PACKAGES = [
