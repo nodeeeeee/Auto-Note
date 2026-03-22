@@ -90,7 +90,7 @@ function getPythonPath() {
 
 function findExecutable(name) {
   const cmd = process.platform === 'win32' ? 'where' : 'which';
-  const r   = spawnSync(cmd, [name], { encoding: 'utf8', timeout: 3000 });
+  const r   = spawnSync(cmd, [name], { encoding: 'utf8', timeout: 3000, windowsHide: true });
   if (r.status === 0 && r.stdout) return r.stdout.trim().split('\n')[0].trim();
   return null;
 }
@@ -261,7 +261,7 @@ async function findSystemPython() {
         const result = await new Promise((resolve, reject) => {
           const proc = spawn(shell, ['-l', '-c',
             "python3 -c 'import ssl,venv,sys; print(sys.executable)'"],
-            { timeout: 15000 });
+            { timeout: 15000, windowsHide: true });
           let out = '';
           proc.stdout?.on('data', d => out += d);
           proc.on('close', code => code === 0 ? resolve(out) : reject());
@@ -309,7 +309,7 @@ async function findSystemPython() {
 
   for (const cand of candidates) {
     if (!cand || !fs.existsSync(cand)) continue;
-    const r = spawnSync(cand, ['-c', 'import ssl, venv'], { timeout: 5000 });
+    const r = spawnSync(cand, ['-c', 'import ssl, venv'], { timeout: 5000, windowsHide: true });
     if (r.status === 0) return cand;
   }
   return null;
@@ -317,7 +317,7 @@ async function findSystemPython() {
 
 function detectCuda() {
   try {
-    const r = spawnSync('nvidia-smi', [], { encoding: 'utf8', timeout: 10000 });
+    const r = spawnSync('nvidia-smi', [], { encoding: 'utf8', timeout: 10000, windowsHide: true });
     if (r.status === 0) {
       const m = r.stdout.match(/CUDA Version:\s*(\d+)\.(\d+)/);
       if (m) return [parseInt(m[1]), parseInt(m[2])];
@@ -389,6 +389,7 @@ function runProcess(cmd) {
     cwd: outDir,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
   activeProc = proc;
   proc.stdout.on('data', d => mainWindow?.webContents.send('process:data', d.toString('utf8')));
@@ -434,8 +435,7 @@ async function runInstaller(basePython, sendLog, sendDone) {
     const proc = spawn(cmd, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-      // On Windows use explicit shell for commands in PATH
-      ...(process.platform === 'win32' ? { shell: false } : {}),
+      windowsHide: true,
     });
     installProc = proc;
     proc.stdout.on('data', d => sendLog(d.toString('utf8')));
