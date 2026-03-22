@@ -342,8 +342,32 @@ let installProc = null;
 let mainWindow  = null;
 
 // ── Subprocess runner (pipeline scripts) ─────────────────────────────────────
+function sendProcessError(msg) {
+  mainWindow?.webContents.send('process:data', msg + '\n');
+  mainWindow?.webContents.send('process:done', { code: 1 });
+}
+
 function runProcess(cmd) {
   if (activeProc) return { error: 'Already running — stop it first.' };
+
+  // ── Pre-flight validation ──────────────────────────────────────────────────
+  const [pythonExe, scriptFile] = cmd;
+
+  // Validate Python executable: if it looks like an absolute path, check it exists.
+  if (pythonExe && path.isAbsolute(pythonExe) && !fs.existsSync(pythonExe)) {
+    sendProcessError(
+      `[error] Python executable not found: ${pythonExe}\n` +
+      `[error] Please install the ML environment from Settings → ML Environment,\n` +
+      `[error] or configure a valid Python path in Settings → Connection.`
+    );
+    return { ok: true };
+  }
+
+  // Validate script file exists.
+  if (scriptFile && path.isAbsolute(scriptFile) && !fs.existsSync(scriptFile)) {
+    sendProcessError(`[error] Script not found: ${scriptFile}`);
+    return { ok: true };
+  }
 
   const outDir = getOutputDir();
   fs.mkdirSync(outDir, { recursive: true });
@@ -393,7 +417,11 @@ function runProcess(cmd) {
   });
   proc.on('error', err => {
     activeProc = null;
-    mainWindow?.webContents.send('process:done', { code: -1, error: err.message });
+    const hint = err.code === 'ENOENT'
+      ? `\n[error] Could not find executable: ${prog}\n[error] Install the ML environment from Settings → ML Environment.`
+      : '';
+    mainWindow?.webContents.send('process:data', `[error] ${err.message}${hint}\n`);
+    mainWindow?.webContents.send('process:done', { code: 1 });
   });
   return { ok: true };
 }

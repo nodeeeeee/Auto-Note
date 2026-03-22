@@ -35,8 +35,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import NamedTuple
 
-import faiss
-import numpy as np
+try:
+    import faiss
+    import numpy as np
+except ImportError as _e:
+    print(f"[error] Missing dependency: {_e}")
+    print("[error] Please install the ML environment from Settings → ML Environment in the AutoNote app.")
+    sys.exit(1)
 
 PROJECT_DIR = Path(__file__).parent
 import sys as _sys

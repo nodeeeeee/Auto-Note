@@ -29,9 +29,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
-from canvasapi import Canvas
-from tqdm import tqdm
+try:
+    import requests
+    from canvasapi import Canvas
+    from tqdm import tqdm
+except ImportError as _e:
+    print(f"[error] Missing dependency: {_e}")
+    print("[error] Please install the ML environment from Settings → ML Environment in the AutoNote app.")
+    sys.exit(1)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -1059,8 +1064,21 @@ def main() -> None:
         parser.print_help()
         sys.exit(0)
 
+    if not CANVAS_URL:
+        print("[error] Canvas URL is not configured.")
+        print("[error] Enter your Canvas URL in Settings → Connection in the AutoNote app.")
+        sys.exit(1)
+    if not CANVAS_TOKEN:
+        print("[error] Canvas token is not configured.")
+        print("[error] Enter your Canvas API token in Settings → API Keys in the AutoNote app.")
+        sys.exit(1)
+
     base_dir = Path(args.path) if args.path else DATA_DIR
-    canvas   = Canvas(CANVAS_URL, CANVAS_TOKEN)
+    try:
+        canvas = Canvas(CANVAS_URL, CANVAS_TOKEN)
+    except Exception as e:
+        print(f"[error] Failed to connect to Canvas: {e}")
+        sys.exit(1)
 
     # ── --course-list ──────────────────────────────────────────────────────────
     if args.course_list:

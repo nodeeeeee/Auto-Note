@@ -25,9 +25,19 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError as _e:
+    print(f"[error] Missing dependency: {_e}")
+    print("[error] Please install the ML environment from Settings → ML Environment in the AutoNote app.")
+    sys.exit(1)
 
-import alignment_parser
+try:
+    import alignment_parser
+except ImportError as _e:
+    print(f"[error] Could not import alignment_parser: {_e}")
+    print(f"[error] Make sure alignment_parser.py is in the same directory as note_generation.py")
+    sys.exit(1)
 
 PROJECT_DIR = Path(__file__).parent
 import sys as _sys
