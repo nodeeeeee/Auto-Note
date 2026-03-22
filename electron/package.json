@@ -1,6 +1,6 @@
 {
   "name": "auto-note",
-  "version": "0.7.10",
+  "version": "0.7.11",
   "description": "AutoNote — lecture notes generator from Canvas recordings",
   "main": "main.js",
   "scripts": {
