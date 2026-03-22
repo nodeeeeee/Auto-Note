@@ -39,6 +39,13 @@ MANIFEST_FILE = DATA_DIR / "manifest.json"
 
 # ── Tunable constants ─────────────────────────────────────────────────────────
 
+# Transcription backend: "auto" | "gpu" | "api"
+# "auto"  → use GPU only if faster-whisper is installed AND VRAM ≥ 16 GB
+# "gpu"   → always attempt GPU (fall back to API if unavailable)
+# "api"   → always use OpenAI Whisper API
+WHISPER_BACKEND   = os.environ.get("AUTONOTE_WHISPER_BACKEND", "auto")
+VRAM_THRESHOLD_MIB = 16 * 1024   # 16 GB
+
 WHISPER_MODEL_SIZE = "large-v3"
 WHISPER_BEAM_SIZE  = 5
 WHISPER_LANGUAGE   = None       # None = auto-detect
@@ -333,25 +340,57 @@ def transcribe_local(video_path: Path, caption_path: Path) -> bool:
 
 # ── Dispatcher ────────────────────────────────────────────────────────────────
 
+def _gpu_vram_ok() -> bool:
+    """Return True if a CUDA GPU with ≥ VRAM_THRESHOLD_MIB VRAM is present."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return False
+        total_mib = torch.cuda.get_device_properties(0).total_memory // (1024 ** 2)
+        return total_mib >= VRAM_THRESHOLD_MIB
+    except Exception:
+        return False
+
+
 def _local_available() -> bool:
     try:
         import faster_whisper  # noqa: F401
-        import torch
-        return torch.cuda.is_available()
+        return _gpu_vram_ok()
     except ImportError:
         return False
 
 
 def transcribe(video_path: Path, caption_path: Path) -> bool:
     """
-    Auto-select backend: use local faster-whisper if available (GPU + package
-    installed), otherwise fall back to OpenAI Whisper API.
+    Select backend according to WHISPER_BACKEND (env AUTONOTE_WHISPER_BACKEND):
+      "auto" — GPU if faster-whisper installed and VRAM ≥ 16 GB, else API
+      "gpu"  — always GPU (fall back to API if unavailable)
+      "api"  — always OpenAI Whisper API
     """
-    if _local_available():
+    backend = WHISPER_BACKEND
+    use_gpu = False
+    if backend == "gpu":
+        if _gpu_vram_ok():
+            try:
+                import faster_whisper  # noqa: F401
+                use_gpu = True
+            except ImportError:
+                print("  [warn] GPU backend selected but faster-whisper not installed "
+                      "— falling back to API.")
+        else:
+            print("  [warn] GPU backend selected but CUDA / VRAM check failed "
+                  "— falling back to API.")
+    elif backend == "auto":
+        use_gpu = _local_available()
+        if not use_gpu:
+            print("  [info] Auto-select: faster-whisper unavailable or VRAM < 16 GB "
+                  "— using OpenAI Whisper API.")
+    # backend == "api": use_gpu stays False
+
+    if use_gpu:
         require_gpu()
         return transcribe_local(video_path, caption_path)
     else:
-        print("  [info] faster-whisper not available — using OpenAI Whisper API.")
         return transcribe_api(video_path, caption_path)
 
 

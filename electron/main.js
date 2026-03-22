@@ -366,10 +366,11 @@ function runProcess(cmd) {
   fs.mkdirSync(outDir, { recursive: true });
   const env = {
     ...process.env,
-    PYTHONUNBUFFERED:  '1',
-    PYTHONIOENCODING:  'utf-8',  // prevent UnicodeEncodeError on Windows cp1252 consoles
-    PYTHONUTF8:        '1',      // Python 3.7+ UTF-8 mode (also forces utf-8 on Windows)
-    AUTONOTE_DATA_DIR: DATA_DIR, // tell scripts where to find config/credentials
+    PYTHONUNBUFFERED:          '1',
+    PYTHONIOENCODING:          'utf-8',  // prevent UnicodeEncodeError on Windows cp1252 consoles
+    PYTHONUTF8:                '1',      // Python 3.7+ UTF-8 mode (also forces utf-8 on Windows)
+    AUTONOTE_DATA_DIR:         DATA_DIR, // tell scripts where to find config/credentials
+    AUTONOTE_WHISPER_BACKEND:  loadConfig().WHISPER_BACKEND || 'auto',
   };
 
   // Unix: prefer node-pty so tqdm sees a real tty and uses \r refresh

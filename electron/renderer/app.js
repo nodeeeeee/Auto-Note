@@ -850,6 +850,16 @@ async function loadSettingsData() {
           </div>
         </div>
       </div>
+      <div class="row">
+        <div class="col expand">
+          <label class="label">Transcription Backend</label>
+          <select id="cfg-whisper-backend" class="input-text" style="flex:1">
+            <option value="auto"  ${(cfg.WHISPER_BACKEND||'auto')==='auto' ?'selected':''}>Auto (GPU if ≥16 GB VRAM, else API)</option>
+            <option value="gpu"   ${(cfg.WHISPER_BACKEND||'auto')==='gpu'  ?'selected':''}>Force GPU (faster-whisper)</option>
+            <option value="api"   ${(cfg.WHISPER_BACKEND||'auto')==='api'  ?'selected':''}>Force API (OpenAI Whisper)</option>
+          </select>
+        </div>
+      </div>
     `;
   }
 
@@ -920,10 +930,11 @@ async function saveAllSettings() {
   // Config
   try {
     const cfgData = {
-      CANVAS_URL:   (document.getElementById('cfg-canvas-url')?.value || '').trim(),
-      PANOPTO_HOST: (document.getElementById('cfg-panopto')?.value || '').trim(),
-      PYTHON_PATH:  (document.getElementById('cfg-python')?.value || '').trim(),
-      OUTPUT_DIR:   (document.getElementById('cfg-output-dir')?.value || '').trim(),
+      CANVAS_URL:       (document.getElementById('cfg-canvas-url')?.value || '').trim(),
+      PANOPTO_HOST:     (document.getElementById('cfg-panopto')?.value || '').trim(),
+      PYTHON_PATH:      (document.getElementById('cfg-python')?.value || '').trim(),
+      OUTPUT_DIR:       (document.getElementById('cfg-output-dir')?.value || '').trim(),
+      WHISPER_BACKEND:  document.getElementById('cfg-whisper-backend')?.value || 'auto',
     };
     await window.api.setConfig(cfgData);
     // Update runtime output dir
