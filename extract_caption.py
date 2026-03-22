@@ -24,7 +24,9 @@ from pathlib import Path
 
 PROJECT_DIR   = Path(__file__).parent
 _AUTO_NOTE_DIR = Path.home() / ".auto_note"
-if getattr(sys, "frozen", False) or PROJECT_DIR == _AUTO_NOTE_DIR / "scripts":
+if os.environ.get("AUTONOTE_DATA_DIR"):
+    DATA_DIR = Path(os.environ["AUTONOTE_DATA_DIR"])
+elif getattr(sys, "frozen", False) or PROJECT_DIR == _AUTO_NOTE_DIR / "scripts":
     DATA_DIR = _AUTO_NOTE_DIR
 else:
     DATA_DIR = PROJECT_DIR

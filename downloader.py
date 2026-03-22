@@ -41,7 +41,12 @@ MANIFEST_FILE = None   # set after DATA_DIR is resolved below
 # Persistent data dir: ~/.auto_note/ when installed (AppImage or scripts/ copy),
 # else the project directory (dev mode).
 _AUTO_NOTE_DIR = Path.home() / ".auto_note"
-if getattr(sys, "frozen", False) or PROJECT_DIR == _AUTO_NOTE_DIR / "scripts":
+# AUTONOTE_DATA_DIR env var lets the Electron app (or any launcher) explicitly
+# set the data directory so config/credentials are always found regardless of
+# where the script file lives (dev mode vs installed).
+if os.environ.get("AUTONOTE_DATA_DIR"):
+    DATA_DIR = Path(os.environ["AUTONOTE_DATA_DIR"])
+elif getattr(sys, "frozen", False) or PROJECT_DIR == _AUTO_NOTE_DIR / "scripts":
     DATA_DIR = _AUTO_NOTE_DIR
 else:
     DATA_DIR = PROJECT_DIR

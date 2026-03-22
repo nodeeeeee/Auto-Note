@@ -347,7 +347,13 @@ function runProcess(cmd) {
 
   const outDir = getOutputDir();
   fs.mkdirSync(outDir, { recursive: true });
-  const env = { ...process.env, PYTHONUNBUFFERED: '1' };
+  const env = {
+    ...process.env,
+    PYTHONUNBUFFERED:  '1',
+    PYTHONIOENCODING:  'utf-8',  // prevent UnicodeEncodeError on Windows cp1252 consoles
+    PYTHONUTF8:        '1',      // Python 3.7+ UTF-8 mode (also forces utf-8 on Windows)
+    AUTONOTE_DATA_DIR: DATA_DIR, // tell scripts where to find config/credentials
+  };
 
   // Unix: prefer node-pty so tqdm sees a real tty and uses \r refresh
   if (process.platform !== 'win32' && nodePty) {
@@ -408,7 +414,7 @@ async function runInstaller(basePython, sendLog, sendDone) {
   const runStep = (cmd, args) => new Promise((resolve) => {
     const proc = spawn(cmd, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
       // On Windows use explicit shell for commands in PATH
       ...(process.platform === 'win32' ? { shell: false } : {}),
     });

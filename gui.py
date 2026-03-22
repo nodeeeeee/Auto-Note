@@ -612,7 +612,12 @@ class OutputConsole:
                 # \r for in-place refresh.  On Windows pty is unavailable so
                 # fall back to a plain pipe (progress bars produce extra lines
                 # but work correctly).
-                env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+                env = {
+                    **os.environ,
+                    "PYTHONUNBUFFERED":  "1",
+                    "PYTHONIOENCODING":  "utf-8",
+                    "PYTHONUTF8":        "1",
+                }
                 _use_pty = False
                 if sys.platform != "win32":
                     try:
