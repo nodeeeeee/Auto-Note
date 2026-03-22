@@ -18,19 +18,15 @@ jobs:
         include:
           - os: ubuntu-22.04
             platform: linux
-            artifact_name: AutoNote-linux-x86_64.AppImage
 
           - os: windows-latest
             platform: windows
-            artifact_name: AutoNote-windows-x86_64.zip
 
-          - os: macos-12          # Intel (x86_64)
+          - os: macos-13            # Intel (x86_64)
             platform: macos-intel
-            artifact_name: AutoNote-macos-x86_64.zip
 
-          - os: macos-latest      # Apple Silicon (arm64)
+          - os: macos-latest        # Apple Silicon (arm64)
             platform: macos-arm
-            artifact_name: AutoNote-macos-arm64.zip
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.platform }})
@@ -39,140 +35,81 @@ jobs:
       # ── Checkout ────────────────────────────────────────────────────────────
       - uses: actions/checkout@v4
 
-      # ── Python ──────────────────────────────────────────────────────────────
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      # ── Node.js ─────────────────────────────────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements.txt
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: electron/package-lock.json
 
-      # ── Install build-time dependencies ─────────────────────────────────────
-      # GUI + OpenAI + Anthropic clients are bundled. The heavy ML stack
-      # (torch, faster-whisper, etc.) is NOT bundled; users run it separately.
-      # The app auto-falls back to OpenAI Whisper API when faster-whisper is absent.
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-
-      # ── Linux: install system libs required by flet/webkit ──────────────────
+      # ── Linux: system libs required by Electron / AppImage ──────────────────
       - name: Install Linux system deps
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libwebkit2gtk-4.0-dev \
-            libglib2.0-dev \
-            fuse libfuse2
+            libgtk-3-dev libglib2.0-dev fuse libfuse2 rpm
 
-      # ── Generate app icons (Linux / macOS) ───────────────────────────────────
-      - name: Generate icons (Linux / macOS)
-        if: matrix.platform != 'windows'
-        run: python make_icon.py
+      # ── Install npm dependencies ─────────────────────────────────────────────
+      - name: Install npm dependencies
+        working-directory: electron
+        run: npm install
 
-      # ── Generate app icons (Windows) ─────────────────────────────────────────
-      - name: Generate icons (Windows)
-        if: matrix.platform == 'windows'
-        run: python make_icon.py
-        shell: pwsh
-
-      # ── Build with PyInstaller ───────────────────────────────────────────────
-      - name: Build (Linux / macOS)
-        if: matrix.platform != 'windows'
-        run: pyinstaller build.spec --noconfirm
+      # ── Build ────────────────────────────────────────────────────────────────
+      - name: Build (Linux)
+        if: matrix.platform == 'linux'
+        working-directory: electron
+        run: npm run build-linux
+        env:
+          # Disable code-signing; we ship unsigned builds
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
       - name: Build (Windows)
         if: matrix.platform == 'windows'
-        run: pyinstaller build.spec --noconfirm
-        shell: pwsh
+        working-directory: electron
+        run: npm run build-win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
-      # ── Linux: wrap dist/AutoNote directory into an AppImage ─────────────────
-      - name: Create AppImage (Linux)
-        if: matrix.platform == 'linux'
-        run: |
-          # Download appimagetool
-          wget -q -O appimagetool \
-            "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
-          chmod +x appimagetool
-
-          # Build AppDir layout
-          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
-
-          # Copy the PyInstaller output
-          cp -r dist/AutoNote/* AppDir/usr/bin/
-
-          # Desktop entry
-          cat > AppDir/AutoNote.desktop << 'EOF'
-          [Desktop Entry]
-          Name=AutoNote
-          Comment=AI lecture note pipeline
-          Exec=AutoNote
-          Icon=AutoNote
-          Type=Application
-          Categories=Education;Science;
-          Terminal=false
-          EOF
-
-          cp AppDir/AutoNote.desktop AppDir/usr/share/applications/
-
-          # Placeholder icon (replace with real icon if available)
-          if [ -f assets/icon.png ]; then
-            cp assets/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/AutoNote.png
-            cp assets/icon.png AppDir/AutoNote.png
-          else
-            # Generate a minimal valid PNG so appimagetool doesn't fail
-            python3 -c "
-          import struct, zlib, base64
-          # 1x1 cyan PNG
-          png = base64.b64decode(
-            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==')
-          open('AppDir/AutoNote.png','wb').write(png)
-          open('AppDir/usr/share/icons/hicolor/256x256/apps/AutoNote.png','wb').write(png)
-          "
-          fi
-
-          # AppStream symlink expected by some tools
-          ln -sf usr/bin/AutoNote AppDir/AppRun
-
-          # Package
-          ARCH=x86_64 ./appimagetool AppDir AutoNote-linux-x86_64.AppImage
-
-      # ── Windows: zip the dist directory ─────────────────────────────────────
-      - name: Package (Windows)
-        if: matrix.platform == 'windows'
-        run: Compress-Archive -Path dist\AutoNote -DestinationPath AutoNote-windows-x86_64.zip
-        shell: pwsh
-
-      # ── macOS Intel: zip the .app bundle ─────────────────────────────────────
-      - name: Package (macOS Intel)
+      - name: Build (macOS Intel)
         if: matrix.platform == 'macos-intel'
-        run: |
-          cd dist
-          zip -r ../AutoNote-macos-x86_64.zip AutoNote.app
+        working-directory: electron
+        run: npm run build-mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
-      # ── macOS ARM: zip the .app bundle ───────────────────────────────────────
-      - name: Package (macOS ARM)
+      - name: Build (macOS ARM)
         if: matrix.platform == 'macos-arm'
-        run: |
-          cd dist
-          zip -r ../AutoNote-macos-arm64.zip AutoNote.app
+        working-directory: electron
+        run: npm run build-mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
-      # ── Upload artifact for debugging (optional) ─────────────────────────────
+      # ── Upload artifact for debugging ────────────────────────────────────────
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_name }}
+          name: build-${{ matrix.platform }}
+          path: |
+            electron/dist/*.AppImage
+            electron/dist/*.exe
+            electron/dist/*.dmg
+            electron/dist/*.zip
+          if-no-files-found: warn
           retention-days: 7
 
       # ── Attach to GitHub Release ─────────────────────────────────────────────
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.artifact_name }}
+          files: |
+            electron/dist/*.AppImage
+            electron/dist/*.exe
+            electron/dist/*.dmg
+            electron/dist/*.zip
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}   # v1.0.0-beta → prerelease
+          prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
