@@ -34,4 +34,3 @@ config.json
 *.egg-info/
 .DS_Store
 electron/node_modules/
-electron/package-lock.json
