@@ -662,7 +662,7 @@ class OutputConsole:
                         pass
                 else:
                     for line in state.proc.stdout:
-                        _process_chunk(line.encode())
+                        _process_chunk(line)
                         now = time.monotonic()
                         if now - _last_update >= _UPDATE_INTERVAL:
                             if buf:
