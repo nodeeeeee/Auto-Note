@@ -337,37 +337,15 @@ function torchIndexUrl(cuda) {
 }
 
 // ── Active process state ──────────────────────────────────────────────────────
-let activeProc  = null;
-let installProc = null;
-let mainWindow  = null;
+let activeProc    = null;
+let installProc   = null;
+let mainWindow    = null;
+let _userStopped  = false;  // set true when user clicks Stop, so close code is ignored
 
 // ── Subprocess runner (pipeline scripts) ─────────────────────────────────────
-function sendProcessError(msg) {
-  mainWindow?.webContents.send('process:data', msg + '\n');
-  mainWindow?.webContents.send('process:done', { code: 1 });
-}
-
 function runProcess(cmd) {
   if (activeProc) return { error: 'Already running — stop it first.' };
-
-  // ── Pre-flight validation ──────────────────────────────────────────────────
-  const [pythonExe, scriptFile] = cmd;
-
-  // Validate Python executable: if it looks like an absolute path, check it exists.
-  if (pythonExe && path.isAbsolute(pythonExe) && !fs.existsSync(pythonExe)) {
-    sendProcessError(
-      `[error] Python executable not found: ${pythonExe}\n` +
-      `[error] Please install the ML environment from Settings → ML Environment,\n` +
-      `[error] or configure a valid Python path in Settings → Connection.`
-    );
-    return { ok: true };
-  }
-
-  // Validate script file exists.
-  if (scriptFile && path.isAbsolute(scriptFile) && !fs.existsSync(scriptFile)) {
-    sendProcessError(`[error] Script not found: ${scriptFile}`);
-    return { ok: true };
-  }
+  _userStopped = false;
 
   const outDir = getOutputDir();
   fs.mkdirSync(outDir, { recursive: true });
@@ -395,7 +373,11 @@ function runProcess(cmd) {
       });
       ptyProc.onExit(({ exitCode }) => {
         activeProc = null;
-        mainWindow?.webContents.send('process:done', { code: exitCode });
+        if (_userStopped) {
+          mainWindow?.webContents.send('process:done', { code: null });
+        } else {
+          mainWindow?.webContents.send('process:done', { code: exitCode });
+        }
       });
       return { ok: true };
     } catch { /* fall through to pipe mode */ }
@@ -413,9 +395,15 @@ function runProcess(cmd) {
   proc.stderr.on('data', d => mainWindow?.webContents.send('process:data', d.toString('utf8')));
   proc.on('close', code => {
     activeProc = null;
-    mainWindow?.webContents.send('process:done', { code });
+    if (_userStopped) {
+      // User clicked Stop — don't treat as an error regardless of exit code
+      mainWindow?.webContents.send('process:done', { code: null });
+    } else {
+      mainWindow?.webContents.send('process:done', { code: code ?? 1 });
+    }
   });
   proc.on('error', err => {
+    if (_userStopped) { activeProc = null; return; }
     activeProc = null;
     const hint = err.code === 'ENOENT'
       ? `\n[error] Could not find executable: ${prog}\n[error] Install the ML environment from Settings → ML Environment.`
@@ -428,11 +416,14 @@ function runProcess(cmd) {
 
 function stopProcess() {
   if (!activeProc) return;
+  _userStopped = true;
   try {
     if (typeof activeProc.kill === 'function') activeProc.kill();
     else activeProc.kill('SIGTERM');
   } catch {}
   activeProc = null;
+  // Send 'stopped' event immediately so the renderer doesn't wait for close
+  mainWindow?.webContents.send('process:done', { code: null });
 }
 
 // ── ML environment installer ──────────────────────────────────────────────────

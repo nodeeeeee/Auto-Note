@@ -1189,4 +1189,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n[info] Interrupted by user.")
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception as _exc:
+        import traceback
+        print(f"\n[error] Unexpected error: {_exc}")
+        traceback.print_exc()
+        sys.exit(1)
