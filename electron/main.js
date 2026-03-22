@@ -24,15 +24,13 @@ const PROJECT_DIR = path.join(__dirname, '..');
 const SCRIPTS_DIR_INSTALLED = path.join(DATA_DIR, 'scripts');
 
 function scriptPath(name) {
-  // 1. Installed location (~/.auto_note/scripts/)
-  const installed = path.join(SCRIPTS_DIR_INSTALLED, name);
-  if (fs.existsSync(installed)) return installed;
-  // 2. Packaged resources
+  // 1. Packaged resources always win when running as AppImage/exe/dmg
+  //    (ensures bundled scripts are never shadowed by stale installed copies)
   if (process.resourcesPath) {
     const packed = path.join(process.resourcesPath, 'scripts', name);
     if (fs.existsSync(packed)) return packed;
   }
-  // 3. Dev mode: sibling of electron/
+  // 2. Dev mode: sibling of electron/
   return path.join(PROJECT_DIR, name);
 }
 
