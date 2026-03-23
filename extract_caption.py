@@ -50,6 +50,11 @@ WHISPER_MODEL_SIZE = "large-v3"
 WHISPER_BEAM_SIZE  = 5
 WHISPER_LANGUAGE   = None       # None = auto-detect
 
+# Normalise: the Settings UI stores "None" as the bare Python keyword, but guard
+# against old scripts that may have written the string "None" or empty string.
+if WHISPER_LANGUAGE in ("None", "", "null"):
+    WHISPER_LANGUAGE = None
+
 # Audio chunk size for OpenAI API (minutes). 20 min @ 32 kbps mono ≈ 4.8 MB,
 # well under the 25 MB per-request limit with a comfortable safety margin.
 _API_CHUNK_MINUTES = 20
@@ -211,7 +216,7 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
                  if i * chunk_sec < total_dur]
 
     all_segments: list = []
-    detected_lang = "en"
+    detected_lang: str | None = None   # set after first chunk; locked for all subsequent chunks
     lang_prob     = 1.0
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -223,22 +228,25 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
                   f"({start:.0f}s – {start+dur:.0f}s)...")
             _extract_audio(audio_path, chunk_file, start=start, duration=dur)
             chunk_mb = chunk_file.stat().st_size / (1024 ** 2)
-            print(f"  Sending to API ({chunk_mb:.1f} MB)...")
+
+            # Chunk 1: auto-detect (or use explicit setting).
+            # Chunk 2+: lock to the language detected from chunk 1 to prevent drift.
+            chunk_lang = WHISPER_LANGUAGE if i == 0 else (detected_lang or WHISPER_LANGUAGE)
+            print(f"  Sending to API ({chunk_mb:.1f} MB, lang={chunk_lang or 'auto'})...")
             with open(chunk_file, "rb") as f:
                 response = client.audio.transcriptions.create(
                     model="whisper-1",
                     file=f,
                     response_format="verbose_json",
                     timestamp_granularities=["word", "segment"],
-                    language=WHISPER_LANGUAGE,   # None = auto-detect
+                    language=chunk_lang,
                 )
 
-            # First chunk determines language
+            # First chunk determines language for all subsequent chunks
             if i == 0:
-                lang_full    = getattr(response, "language", "english") or "english"
-                detected_lang = _LANG_NAMES.get(lang_full.lower(),
-                                                 lang_full[:2].lower())
-                print(f"  Language: {lang_full} ({detected_lang})")
+                lang_full     = getattr(response, "language", "english") or "english"
+                detected_lang = _LANG_NAMES.get(lang_full.lower(), lang_full[:2].lower())
+                print(f"  Language detected: {lang_full} → locking to '{detected_lang}' for remaining chunks")
 
             resp_dict = response.model_dump()
             api_segs  = resp_dict.get("segments", [])
@@ -262,7 +270,7 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
             all_segments.extend(segs)
 
     result = {
-        "language":             detected_lang,
+        "language":             detected_lang or "en",
         "language_probability": lang_prob,
         "duration":             round(total_dur, 3),
         "segments":             all_segments,
@@ -304,6 +312,13 @@ def transcribe_local(video_path: Path, caption_path: Path) -> bool:
         word_timestamps=True,
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
+        # Prevents hallucination cascades: without this, one hallucinated segment
+        # is fed as context to the next, causing runaway gibberish / wrong-language output.
+        condition_on_previous_text=False,
+        # Discard segments where the model is not confident there is speech.
+        no_speech_threshold=0.6,
+        # Discard highly repetitive segments (a hallucination signature).
+        compression_ratio_threshold=2.4,
     )
     print(f"  Language: {info.language} (p={info.language_probability:.2f}), "
           f"duration: {info.duration:.0f}s")
