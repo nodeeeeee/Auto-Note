@@ -1294,6 +1294,12 @@ async function init() {
   const result = await window.api.fetchCourses().catch(() => ({ courses: [] }));
   State.courses = result?.courses || [];
 
+  // If no courses loaded (not configured yet), start on Settings so the user
+  // can enter their Canvas URL/token without having to click through the empty Dashboard.
+  if (State.courses.length === 0) {
+    State.currentPage = 6;
+  }
+
   // Build UI
   buildNav();
   renderPage();
