@@ -491,9 +491,11 @@ def main() -> None:
                 print(f"  {Path(v['path']).name}  ->  {Path(v['caption']).name}")
         return
 
-    print(f"Found {len(pending)} video(s) to caption.\n")
+    total = len(pending)
+    print(f"Found {total} video(s) to caption.\n")
     ok = 0
-    for key, vpath in pending:
+    for i, (key, vpath) in enumerate(pending, 1):
+        print(f"[{i}/{total}] {Path(vpath).name}")
         if process_video(Path(vpath), manifest, key):
             ok += 1
         save_manifest(manifest)
