@@ -398,14 +398,15 @@ def get_embedder():
     return model
 
 
-def embed_texts(model, texts: list[str]) -> np.ndarray:
+def embed_texts(model, texts: list[str], desc: str = "  embedding") -> np.ndarray:
     """Return L2-normalised float32 embeddings, shape (N, D)."""
     vecs = model.encode(
         texts,
         batch_size=BATCH_SIZE,
-        show_progress_bar=False,
+        show_progress_bar=True,
         normalize_embeddings=True,   # cosine sim → inner product on unit sphere
         convert_to_numpy=True,
+        tqdm_kwargs={"desc": desc, "unit": "text", "leave": False},
     )
     return vecs.astype(np.float32)
 
@@ -663,7 +664,7 @@ def align(caption_path: Path, slide_path: Path,
 
     slide_texts = _enrich_sparse_slides([s.text if s.text.strip() else s.label for s in slides])
     print(f"  Embedding {len(slides)} slides...")
-    slide_embs = embed_texts(embedder, slide_texts)
+    slide_embs = embed_texts(embedder, slide_texts, desc="  slides")
     index      = build_faiss_index(slide_embs)
 
     # ── Embed transcript segments (with context window) ───────────────────────
@@ -671,7 +672,7 @@ def align(caption_path: Path, slide_path: Path,
     window_texts = build_window_texts(segments, CONTEXT_SEC)
 
     print(f"  Embedding {len(window_texts)} transcript windows...")
-    seg_embs = embed_texts(embedder, window_texts)   # (T, D)
+    seg_embs = embed_texts(embedder, window_texts, desc="  transcript")   # (T, D)
 
     # ── Raw similarity scores: each segment vs all slides ─────────────────────
     # faiss.search returns (scores, indices); with IndexFlatIP + normalised
@@ -849,7 +850,7 @@ def align_multi_slides(
     print(f"  Building context windows (±{CONTEXT_SEC:.0f}s)...")
     window_texts = build_window_texts(segments, CONTEXT_SEC)
     print(f"  Embedding {len(window_texts)} transcript windows...")
-    seg_embs = embed_texts(embedder, window_texts)
+    seg_embs = embed_texts(embedder, window_texts, desc="  transcript")
 
     # ── FAISS search → log-likelihood matrix ──────────────────────────────────
     print("  Querying FAISS index...")

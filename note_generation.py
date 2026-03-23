@@ -808,9 +808,10 @@ def generate_section(
         return sec_file.read_text(encoding="utf-8")
 
     chunk_title = _chunk_title(chunk)
+    fi_tag = f"F{ld.file_idx} " if ld.file_idx > 1 else ""
     if bar:
-        fi = f"F{ld.file_idx} " if ld.file_idx > 1 else ""
-        bar.set_postfix_str(f"L{lec_num}{fi}§{ci}/{chunk_title[:22]} generating")
+        bar.set_postfix_str(f"L{lec_num}{fi_tag}§{ci}/{chunk_title[:22]} generating")
+    tqdm.write(f"  → L{lec_num}{fi_tag}§{ci} [{chunk_title[:40]}]  slides {chunk[0].index+1}–{chunk[-1].index+1}  calling {NOTE_MODEL}…")
 
     # Render only this chunk's slide images (lazy, avoids OOM)
     img_map = ld.render_chunk_images([s.index for s in chunk])
@@ -830,7 +831,10 @@ def generate_section(
         has_transcript=has_transcript,
     )
 
+    import time as _time
+    _t0 = _time.monotonic()
     draft = _call(NOTE_MODEL, _P("system"), user, _max_tokens(detail))
+    tqdm.write(f"     ✓ {len(draft):,} chars  ({_time.monotonic()-_t0:.0f}s)")
 
     if not draft:
         tqdm.write(f"  [warn] Empty draft for L{lec_num} §{ci} — skipping")

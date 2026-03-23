@@ -188,21 +188,13 @@ function getFilesStatus(courseId) {
   const outDir   = getOutputDir();
   const courseDir = path.join(outDir, String(courseId));
 
-  // Videos from manifest (prefer OUTPUT_DIR, then DATA_DIR)
+  // Videos: count mp4 files actually on disk (manifest can have stale/duplicate entries)
+  const videosDir = path.join(courseDir, 'videos');
   let videoDone = 0, videoTotal = 0;
-  for (const mp of [
-    path.join(outDir,    'manifest.json'),
-    path.join(DATA_DIR,  'manifest.json'),
-  ]) {
-    if (fs.existsSync(mp)) {
-      try {
-        const m = JSON.parse(fs.readFileSync(mp, 'utf8'));
-        const items = Object.values(m).filter(v => v.path && v.path.includes(String(courseId)));
-        videoTotal = items.length;
-        videoDone  = items.filter(v => v.status === 'done').length;
-        if (videoTotal > 0) break;
-      } catch {}
-    }
+  if (fs.existsSync(videosDir)) {
+    const mp4s = fs.readdirSync(videosDir).filter(f => f.toLowerCase().endsWith('.mp4'));
+    videoTotal = mp4s.length;
+    videoDone  = mp4s.length;  // present on disk = downloaded
   }
 
   const countJson = (dir, excludePattern) => {
