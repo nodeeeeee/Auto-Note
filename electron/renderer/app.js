@@ -687,16 +687,21 @@ function buildUninstallSection() {
     <div style="margin-top:24px;padding:16px;border:1px solid var(--c-red,#e53935);border-radius:8px;background:rgba(229,57,53,0.06)">
       <div style="font-weight:600;font-size:14px;color:var(--c-red,#e53935);margin-bottom:6px">Danger Zone — Uninstall AutoNote</div>
       <div style="font-size:12px;color:var(--c-white-60);margin-bottom:12px">
-        Permanently removes the ML environment and all app settings.
-        The app binary itself must be deleted separately after uninstalling.
+        The ML environment will always be removed. Choose what else to keep.
       </div>
       <div id="uninstall-sizes" style="font-size:12px;color:var(--c-white-60);margin-bottom:12px;line-height:1.8">
         Calculating sizes…
       </div>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:12px;cursor:pointer">
-        <input type="checkbox" id="uninstall-keep-content" checked>
-        Keep generated content (notes, captions, alignment, videos, materials)
-      </label>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="uninstall-keep-content" checked>
+          Keep generated content (notes, captions, alignment, videos, materials)
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="uninstall-keep-settings" checked>
+          Keep settings and config (Canvas token, API keys, output directory)
+        </label>
+      </div>
       <button id="btn-uninstall" style="background:var(--c-red,#e53935);color:#fff;border:none;padding:8px 18px;border-radius:6px;font-size:13px;cursor:pointer;font-weight:600">
         Uninstall AutoNote
       </button>
@@ -1246,14 +1251,14 @@ async function attachPageHandlers() {
       try {
         const s = await window.api.getUninstallSizes();
         const fmt = mb => mb >= 1024 ? `${(mb/1024).toFixed(1)} GB` : `${mb} MB`;
-        let html = `<b>Will be deleted:</b><br>`;
-        html += `&nbsp;&nbsp;• ML Environment: <b>${fmt(s.venv)}</b><br>`;
-        html += `&nbsp;&nbsp;• App settings &amp; config: <b>${fmt(s.data)}</b><br>`;
+        let html = `<b>Always deleted:</b><br>`;
+        html += `&nbsp;&nbsp;• ML Environment (~/.auto_note/venv): <b>${fmt(s.venv)}</b><br>`;
+        html += `<br><b>Optional (controlled by checkboxes below):</b><br>`;
+        html += `&nbsp;&nbsp;• Settings &amp; config (~/.auto_note/): <b>${fmt(s.settings)}</b><br>`;
         if (s.content !== null) {
-          html += `<br><b>Generated content</b> (kept unless unchecked):<br>`;
-          html += `&nbsp;&nbsp;• Output directory (${s.outputDir}): <b>${fmt(s.content)}</b>`;
+          html += `&nbsp;&nbsp;• Generated content (${s.outputDir}): <b>${fmt(s.content)}</b>`;
         } else {
-          html += `<br><span style="color:var(--c-white-45)">Generated content is inside the app data dir and will be removed with it.</span>`;
+          html += `&nbsp;&nbsp;• Generated content: <span style="color:var(--c-white-45)">inside ~/.auto_note (removed with settings)</span>`;
         }
         el.innerHTML = html;
       } catch { el.textContent = 'Could not calculate sizes.'; }
@@ -1261,31 +1266,27 @@ async function attachPageHandlers() {
 
     // Uninstall button
     document.getElementById('btn-uninstall')?.addEventListener('click', async () => {
-      const keepContent = document.getElementById('uninstall-keep-content')?.checked ?? true;
-      const contentLine = keepContent
-        ? 'Generated notes, captions, and videos will be kept.'
-        : 'Generated notes, captions, and videos will also be DELETED.';
-      const confirmed = confirm(
-        `Are you sure you want to uninstall AutoNote?\n\n` +
-        `This will delete:\n` +
-        `  • The ML environment (~/.auto_note/venv)\n` +
-        `  • All app settings and credentials\n\n` +
-        `${contentLine}\n\n` +
-        `After uninstalling, please delete the AutoNote app binary/installer manually.`
-      );
-      if (!confirmed) return;
+      const keepContent  = document.getElementById('uninstall-keep-content')?.checked ?? true;
+      const keepSettings = document.getElementById('uninstall-keep-settings')?.checked ?? true;
+      const lines = ['This will permanently delete:', '  • ML environment (~/.auto_note/venv)'];
+      if (!keepSettings) lines.push('  • All settings, API keys, and credentials');
+      if (!keepContent)  lines.push('  • All generated content (notes, captions, videos…)');
+      lines.push('', 'This cannot be undone. Continue?');
+
+      if (!confirm(lines.join('\n'))) return;
 
       const btn = document.getElementById('btn-uninstall');
       btn.disabled = true;
       btn.textContent = 'Uninstalling…';
 
-      const result = await window.api.runUninstall(keepContent);
+      const result = await window.api.runUninstall(keepContent, keepSettings);
       if (result.ok) {
+        const isWin = result.platform === 'win32';
         alert(
           'AutoNote data has been removed.\n\n' +
-          (process.platform === 'win32'
-            ? 'To finish uninstalling, go to Windows Settings → Apps → AutoNote → Uninstall.'
-            : 'To finish uninstalling, delete the AutoNote AppImage file.')
+          (isWin
+            ? 'The Windows uninstaller has been launched — follow the prompts to remove the app from your system.'
+            : 'To finish, delete the AutoNote AppImage file.')
         );
         window.close();
       } else {

@@ -643,19 +643,19 @@ function registerIpc() {
 
   // ── Uninstaller ──────────────────────────────────────────────────────────
   ipcMain.handle('uninstall:sizes', async () => {
-    const venvDir    = path.join(DATA_DIR, 'venv');
-    const outputDir  = getOutputDir();
+    const venvDir   = path.join(DATA_DIR, 'venv');
+    const outputDir = getOutputDir();
     return {
-      venv:    getDirSizeMB(venvDir),
-      data:    getDirSizeMB(DATA_DIR, ['venv']),   // config/scripts/manifest, excl venv
-      content: outputDir !== DATA_DIR ? getDirSizeMB(outputDir) : null,
+      venv:     getDirSizeMB(venvDir),
+      settings: getDirSizeMB(DATA_DIR, ['venv']),  // config/scripts/manifest/api-keys, excl venv
+      content:  outputDir !== DATA_DIR ? getDirSizeMB(outputDir) : null,
       outputDir,
     };
   });
 
-  ipcMain.handle('uninstall:run', async (_, { keepContent }) => {
+  ipcMain.handle('uninstall:run', async (_, { keepContent, keepSettings }) => {
     try {
-      // 1. Delete ML venv
+      // 1. Always delete ML venv (large, no user value without the app)
       const venvDir = path.join(DATA_DIR, 'venv');
       if (fs.existsSync(venvDir)) rmRecursive(venvDir);
 
@@ -667,10 +667,25 @@ function registerIpc() {
         }
       }
 
-      // 3. Delete the rest of DATA_DIR (config, scripts, manifest, api keys…)
-      if (fs.existsSync(DATA_DIR)) rmRecursive(DATA_DIR);
+      // 3. Optionally delete settings (config, API keys, credentials, manifest, scripts cache)
+      if (!keepSettings && fs.existsSync(DATA_DIR)) {
+        rmRecursive(DATA_DIR);
+      } else if (keepSettings) {
+        // Still remove the scripts cache dir — it will be re-created if app is reinstalled
+        const scriptsDir = path.join(DATA_DIR, 'scripts');
+        if (fs.existsSync(scriptsDir)) rmRecursive(scriptsDir);
+      }
 
-      return { ok: true };
+      // 4. On Windows: launch the NSIS uninstaller so the app is removed from
+      //    Windows Settings → Apps automatically, then quit.
+      if (process.platform === 'win32') {
+        const uninstExe = path.join(path.dirname(process.execPath), 'Uninstall AutoNote.exe');
+        if (fs.existsSync(uninstExe)) {
+          spawn(uninstExe, ['--updated'], { detached: true, stdio: 'ignore' }).unref();
+        }
+      }
+
+      return { ok: true, platform: process.platform };
     } catch (err) {
       return { ok: false, error: err.message };
     }
