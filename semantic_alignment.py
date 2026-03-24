@@ -56,10 +56,11 @@ else:
 
 # Course output directory: defaults to DATA_DIR but can be overridden by
 # OUTPUT_DIR in config.json so files land in the user's chosen Output Dir.
-_sa_config: dict = (
-    json.loads((DATA_DIR / "config.json").read_text())
-    if (DATA_DIR / "config.json").exists() else {}
-)
+try:
+    _cfg_file = DATA_DIR / "config.json"
+    _sa_config: dict = json.loads(_cfg_file.read_text(encoding="utf-8")) if _cfg_file.exists() else {}
+except Exception:
+    _sa_config = {}
 _out_dir = _sa_config.get("OUTPUT_DIR", "").strip()
 COURSE_DATA_DIR = Path(_out_dir) if _out_dir else DATA_DIR
 
@@ -393,21 +394,27 @@ def get_embedder():
     from sentence_transformers import SentenceTransformer
     import torch
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"  [embed] Loading {EMBED_MODEL} on {device} ...")
-    model = SentenceTransformer(EMBED_MODEL, device=device)
+    print(f"  [embed] Loading {EMBED_MODEL} on {device} ...", flush=True)
+    try:
+        model = SentenceTransformer(EMBED_MODEL, device=device)
+    except Exception as e:
+        print(f"  [embed] Failed to load model: {e}", flush=True)
+        raise
+    print(f"  [embed] Model loaded.", flush=True)
     return model
 
 
 def embed_texts(model, texts: list[str], desc: str = "  embedding") -> np.ndarray:
     """Return L2-normalised float32 embeddings, shape (N, D)."""
-    print(f"{desc} ({len(texts)} texts)…", flush=True)
+    print(f"{desc} ({len(texts)} texts)...", flush=True)
     vecs = model.encode(
         texts,
         batch_size=BATCH_SIZE,
-        show_progress_bar=True,
+        show_progress_bar=False,     # avoid tqdm issues in Windows pipe-mode subprocesses
         normalize_embeddings=True,   # cosine sim → inner product on unit sphere
         convert_to_numpy=True,
     )
+    print(f"{desc} done.", flush=True)
     return vecs.astype(np.float32)
 
 
@@ -1106,17 +1113,25 @@ def _content_match_slide_group(
 
 
 def process_course(course_id: int | str) -> None:
-    course_dir = COURSE_DATA_DIR / str(course_id)
-    captions   = sorted((course_dir / "captions").glob("*.json"))
+    course_dir  = COURSE_DATA_DIR / str(course_id)
+    captions_dir = course_dir / "captions"
+    print(f"Course dir : {course_dir}", flush=True)
+    print(f"Captions   : {captions_dir}", flush=True)
+
+    captions = sorted(captions_dir.glob("*.json")) if captions_dir.exists() else []
     all_slides = _candidate_slides(course_dir)
     out_dir    = course_dir / "alignment"
 
     if not captions:
-        print(f"No captions found in {course_dir}/captions/")
+        print(f"[warn] No captions found in {captions_dir}")
+        print("       Run 'Transcribe' first before aligning.")
         return
     if not all_slides:
-        print(f"No slide files found under {course_dir}/materials/")
+        print(f"[warn] No slide files found under {course_dir / 'materials'}")
+        print("       Run 'Download materials' first.")
         return
+
+    print(f"Found {len(captions)} caption(s), {len(all_slides)} slide file(s).", flush=True)
 
     # Group slide files by lecture number
     slides_by_num: dict[int, list[Path]] = defaultdict(list)
@@ -1128,6 +1143,16 @@ def process_course(course_id: int | str) -> None:
     embedder = get_embedder()
 
     for cap in captions:
+        # Skip captions flagged as low-quality (wrong/empty recordings)
+        try:
+            with open(cap, encoding="utf-8") as _f:
+                _meta = json.load(_f)
+            if _meta.get("quality") == "low":
+                print(f"  [skip] Low-quality transcript (wrong/empty recording): {cap.name}")
+                continue
+        except Exception:
+            pass   # can't read → proceed and let align() handle it
+
         slide_group = _find_best_slide_group(cap, slides_by_num, all_slides)
         if not slide_group:
             slide_group = _content_match_slide_group(

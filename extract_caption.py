@@ -352,12 +352,23 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
         "segments":             all_segments,
     }
 
+    n_seg  = len(all_segments)
+    n_word = sum(len(s["words"]) for s in all_segments)
+
+    # Quality check: flag likely wrong/empty recordings so alignment skips them
+    dur = total_dur or 1.0
+    wpm = (n_word / dur) * 60
+    if n_word < 50 or wpm < 10:
+        result["quality"] = "low"
+        print(f"  [warn] Very sparse transcript ({n_word} words, {wpm:.0f} wpm) — "
+              f"flagged as low quality, alignment will be skipped.")
+    else:
+        result["quality"] = "ok"
+
     caption_path.parent.mkdir(parents=True, exist_ok=True)
     with open(caption_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
 
-    n_seg  = len(result["segments"])
-    n_word = sum(len(s["words"]) for s in result["segments"])
     drop_note = f"  ({total_dropped} hallucinated segments removed)" if total_dropped else ""
     print(f"  Saved: {n_seg} segments / {n_word} words -> {caption_path}{drop_note}")
     return True
@@ -452,6 +463,20 @@ def transcribe_local(video_path: Path, caption_path: Path) -> bool:
 
     n_seg  = len(result["segments"])
     n_word = sum(len(s["words"]) for s in result["segments"])
+
+    # Quality check: flag likely wrong/empty recordings so alignment skips them
+    dur    = result["duration"] or 1.0
+    wpm    = (n_word / dur) * 60
+    if n_word < 50 or wpm < 10:
+        result["quality"] = "low"
+        print(f"  [warn] Very sparse transcript ({n_word} words, {wpm:.0f} wpm) — "
+              f"flagged as low quality, alignment will be skipped.")
+    else:
+        result["quality"] = "ok"
+
+    with open(caption_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
     print(f"  Saved: {n_seg} segments / {n_word} words -> {caption_path}")
     return True
 
