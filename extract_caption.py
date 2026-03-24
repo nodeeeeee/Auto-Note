@@ -136,14 +136,45 @@ def _video_duration(video_path: Path) -> float:
 
 
 def _extract_audio(video_path: Path, out_path: Path,
-                   start: float = 0.0, duration: float | None = None) -> None:
-    """Extract a low-bitrate mono mp3 clip suitable for the OpenAI API."""
+                   start: float = 0.0, duration: float | None = None,
+                   desc: str | None = None, total_sec: float | None = None) -> None:
+    """Extract a low-bitrate mono mp3 clip suitable for the OpenAI API.
+
+    When *desc* is given, a tqdm progress bar is shown via ffmpeg-progress-yield.
+    *total_sec* (or *duration*) is used as the known duration for the bar.
+    """
     cmd = ["ffmpeg", "-y", "-i", str(video_path)]
     if start > 0:
         cmd += ["-ss", str(start)]
     if duration is not None:
         cmd += ["-t", str(duration)]
     cmd += ["-vn", "-ar", "16000", "-ac", "1", "-b:a", "32k", str(out_path)]
+
+    if desc:
+        dur = duration or total_sec
+        try:
+            from ffmpeg_progress_yield import FfmpegProgress
+            from tqdm import tqdm
+            ff  = FfmpegProgress(cmd)
+            bar = tqdm(
+                total=100, unit="%", desc=desc,
+                bar_format="{desc}: {percentage:3.0f}%|{bar}| [{elapsed}<{remaining}]",
+                dynamic_ncols=True,
+            )
+            last_pct = 0
+            for pct in ff.run_command_with_progress(
+                popen_kwargs={"creationflags": _SUBPROCESS_FLAGS},
+                duration_override=dur,
+            ):
+                p = int(pct)
+                if p > last_pct:
+                    bar.update(p - last_pct)
+                    last_pct = p
+            bar.update(100 - last_pct)
+            bar.close()
+            return
+        except Exception:
+            pass  # fall through to silent mode
     subprocess.run(cmd, capture_output=True, check=True, creationflags=_SUBPROCESS_FLAGS)
 
 
@@ -169,6 +200,29 @@ def _api_segments_to_schema(api_segs: list, time_offset: float = 0.0) -> list:
     return out
 
 
+def _filter_api_segments(api_segs: list) -> tuple[list, int]:
+    """
+    Remove hallucinated or silent segments returned by the OpenAI Whisper API.
+    Uses the same thresholds as the local faster-whisper backend.
+    Returns (filtered_list, n_dropped).
+    """
+    good = []
+    dropped = 0
+    for seg in api_segs:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            dropped += 1
+            continue
+        if seg.get("no_speech_prob", 0.0) > 0.6:
+            dropped += 1
+            continue
+        if seg.get("compression_ratio", 1.0) > 2.4:
+            dropped += 1
+            continue
+        good.append(seg)
+    return good, dropped
+
+
 def transcribe_api(video_path: Path, caption_path: Path) -> bool:
     """
     Transcribe using OpenAI Whisper API (whisper-1).
@@ -176,6 +230,8 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
              (reused on retry if already present).
     Step 2 — split audio into ≤ _API_CHUNK_MINUTES chunks and call the API.
     """
+    import time as _time
+
     if caption_path.exists():
         print(f"  [skip] Caption already exists: {caption_path.name}")
         return True
@@ -198,41 +254,48 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
     audio_path = audio_dir / (video_path.stem + ".mp3")
     audio_dir.mkdir(parents=True, exist_ok=True)
 
+    total_dur = _video_duration(video_path)
+
     if audio_path.exists():
-        print(f"  Audio already extracted, reusing: {audio_path.name}")
+        print(f"  Audio already extracted: {audio_path.name}  ({total_dur:.0f}s)")
     else:
-        print(f"  Extracting audio from video: {video_path.name}")
-        _extract_audio(video_path, audio_path)
+        print(f"  Extracting audio from video ({total_dur:.0f}s)...")
+        _extract_audio(video_path, audio_path,
+                       desc="  extracting audio", total_sec=total_dur)
         size_mb = audio_path.stat().st_size / (1024 ** 2)
         print(f"  Audio saved: {audio_path.name} ({size_mb:.1f} MB)")
 
     # ── Step 2: chunk & transcribe ────────────────────────────────────────────
-    print(f"  Transcribing via OpenAI Whisper API: {video_path.name}")
-    total_dur = _video_duration(audio_path)
-    print(f"  Duration: {total_dur:.0f}s")
-
     chunk_sec = _API_CHUNK_MINUTES * 60
     offsets   = [i * chunk_sec for i in range(int(total_dur // chunk_sec) + 1)
                  if i * chunk_sec < total_dur]
+    n_chunks  = len(offsets)
+
+    print(f"  Transcribing via Whisper API: {n_chunks} chunk(s) × "
+          f"≤{_API_CHUNK_MINUTES} min  (total {total_dur:.0f}s)")
 
     all_segments: list = []
     detected_lang: str | None = None   # set after first chunk; locked for all subsequent chunks
     lang_prob     = 1.0
+    total_dropped = 0
 
     with tempfile.TemporaryDirectory() as tmp:
         for i, start in enumerate(offsets):
-            dur = min(chunk_sec, total_dur - start)
+            dur        = min(chunk_sec, total_dur - start)
             chunk_file = Path(tmp) / f"chunk_{i:03d}.mp3"
 
-            print(f"  Extracting chunk {i+1}/{len(offsets)} "
-                  f"({start:.0f}s – {start+dur:.0f}s)...")
+            print(f"  Chunk {i+1}/{n_chunks}: {start:.0f}s – {start+dur:.0f}s  "
+                  f"extracting...", end="", flush=True)
             _extract_audio(audio_path, chunk_file, start=start, duration=dur)
             chunk_mb = chunk_file.stat().st_size / (1024 ** 2)
 
             # Chunk 1: auto-detect (or use explicit setting).
             # Chunk 2+: lock to the language detected from chunk 1 to prevent drift.
             chunk_lang = WHISPER_LANGUAGE if i == 0 else (detected_lang or WHISPER_LANGUAGE)
-            print(f"  Sending to API ({chunk_mb:.1f} MB, lang={chunk_lang or 'auto'})...")
+            print(f"  {chunk_mb:.1f} MB  lang={chunk_lang or 'auto'}  "
+                  f"sending to API...", end="", flush=True)
+
+            t0 = _time.monotonic()
             with open(chunk_file, "rb") as f:
                 response = client.audio.transcriptions.create(
                     model="whisper-1",
@@ -241,12 +304,12 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
                     timestamp_granularities=["word", "segment"],
                     language=chunk_lang,
                 )
+            elapsed = _time.monotonic() - t0
 
             # First chunk determines language for all subsequent chunks
             if i == 0:
                 lang_full     = getattr(response, "language", "english") or "english"
                 detected_lang = _LANG_NAMES.get(lang_full.lower(), lang_full[:2].lower())
-                print(f"  Language detected: {lang_full} → locking to '{detected_lang}' for remaining chunks")
 
             resp_dict = response.model_dump()
             api_segs  = resp_dict.get("segments", [])
@@ -262,12 +325,25 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
                         seg["words"].append(api_words[w_idx])
                         w_idx += 1
 
+            # Filter hallucinated / silent segments (same thresholds as local backend)
+            api_segs, n_dropped = _filter_api_segments(api_segs)
+            total_dropped += n_dropped
+
             segs = _api_segments_to_schema(api_segs, time_offset=start)
             # Re-number segment IDs to be globally unique
             base_id = len(all_segments)
             for j, s in enumerate(segs):
                 s["id"] = base_id + j
             all_segments.extend(segs)
+
+            drop_note = f"  ({n_dropped} dropped)" if n_dropped else ""
+            lang_note = (f"  lang={detected_lang}" if i == 0 else "")
+            print(f"  done in {elapsed:.0f}s  {len(segs)} segs{drop_note}{lang_note}")
+
+    if detected_lang and i == 0:   # only one chunk — print lang info here
+        pass  # already printed above
+    elif detected_lang:
+        print(f"  Language locked to '{detected_lang}' from first chunk")
 
     result = {
         "language":             detected_lang or "en",
@@ -282,7 +358,8 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
 
     n_seg  = len(result["segments"])
     n_word = sum(len(s["words"]) for s in result["segments"])
-    print(f"  Saved: {n_seg} segments / {n_word} words -> {caption_path}")
+    drop_note = f"  ({total_dropped} hallucinated segments removed)" if total_dropped else ""
+    print(f"  Saved: {n_seg} segments / {n_word} words -> {caption_path}{drop_note}")
     return True
 
 
