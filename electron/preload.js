@@ -58,5 +58,5 @@ contextBridge.exposeInMainWorld('api', {
 
   // ── Uninstaller ───────────────────────────────────────────────────────────
   getUninstallSizes: ()                             => ipcRenderer.invoke('uninstall:sizes'),
-  runUninstall:      (keepContent, keepSettings)    => ipcRenderer.invoke('uninstall:run', { keepContent, keepSettings }),
+  runUninstall:      (keepContent, keepSettings, keepVenv) => ipcRenderer.invoke('uninstall:run', { keepContent, keepSettings, keepVenv }),
 });

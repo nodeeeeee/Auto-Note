@@ -719,11 +719,13 @@ function registerIpc() {
     };
   });
 
-  ipcMain.handle('uninstall:run', async (_, { keepContent, keepSettings }) => {
+  ipcMain.handle('uninstall:run', async (_, { keepContent, keepSettings, keepVenv }) => {
     try {
-      // 1. Always delete ML venv (large, no user value without the app)
-      const venvDir = path.join(DATA_DIR, 'venv');
-      if (fs.existsSync(venvDir)) rmRecursive(venvDir);
+      // 1. Optionally delete ML venv
+      if (!keepVenv) {
+        const venvDir = path.join(DATA_DIR, 'venv');
+        if (fs.existsSync(venvDir)) rmRecursive(venvDir);
+      }
 
       // 2. Optionally delete generated content (OUTPUT_DIR if separate from DATA_DIR)
       if (!keepContent) {
@@ -772,6 +774,7 @@ function createWindow() {
     height:    780,
     minWidth:  720,
     minHeight: 520,
+    show:            false,   // wait for ready-to-show to avoid blank flash
     backgroundColor: '#1E2A2A',
     webPreferences: {
       preload:          path.join(__dirname, 'preload.js'),
@@ -779,10 +782,23 @@ function createWindow() {
       contextIsolation: true,
     },
   });
+  mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   if (process.env.AUTONOTE_DEV) mainWindow.webContents.openDevTools();
+  // F12 / Ctrl+Shift+I opens DevTools for in-field debugging
+  mainWindow.webContents.on('before-input-event', (_, input) => {
+    if (input.type !== 'keyDown') return;
+    if (input.key === 'F12' ||
+        (input.control && input.shift && input.key === 'I')) {
+      mainWindow.webContents.openDevTools();
+    }
+  });
   mainWindow.on('closed', () => { mainWindow = null; });
 }
+
+// Disable GPU hardware acceleration on Windows to prevent blank white/teal
+// screen that can occur with certain GPU drivers (very common Electron issue).
+if (process.platform === 'win32') app.disableHardwareAcceleration();
 
 app.whenReady().then(() => {
   registerIpc();

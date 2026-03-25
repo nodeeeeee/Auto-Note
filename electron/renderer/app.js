@@ -728,12 +728,16 @@ function buildUninstallSection() {
     <div style="margin-top:24px;padding:16px;border:1px solid var(--c-red,#e53935);border-radius:8px;background:rgba(229,57,53,0.06)">
       <div style="font-weight:600;font-size:14px;color:var(--c-red,#e53935);margin-bottom:6px">Danger Zone — Uninstall AutoNote</div>
       <div style="font-size:12px;color:var(--c-white-60);margin-bottom:12px">
-        The ML environment will always be removed. Choose what else to keep.
+        Choose what to remove. Unchecked items will be permanently deleted.
       </div>
       <div id="uninstall-sizes" style="font-size:12px;color:var(--c-white-60);margin-bottom:12px;line-height:1.8">
         Calculating sizes…
       </div>
       <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="uninstall-keep-venv" checked>
+          Keep ML environment (PyTorch, Whisper, sentence-transformers, …)
+        </label>
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
           <input type="checkbox" id="uninstall-keep-content" checked>
           Keep generated content (notes, captions, alignment, videos, materials)
@@ -1301,9 +1305,8 @@ async function attachPageHandlers() {
       try {
         const s = await window.api.getUninstallSizes();
         const fmt = mb => mb >= 1024 ? `${(mb/1024).toFixed(1)} GB` : `${mb} MB`;
-        let html = `<b>Always deleted:</b><br>`;
+        let html = `<b>Disk usage (controlled by checkboxes below):</b><br>`;
         html += `&nbsp;&nbsp;• ML Environment (~/.auto_note/venv): <b>${fmt(s.venv)}</b><br>`;
-        html += `<br><b>Optional (controlled by checkboxes below):</b><br>`;
         html += `&nbsp;&nbsp;• Settings &amp; config (~/.auto_note/): <b>${fmt(s.settings)}</b><br>`;
         if (s.content !== null) {
           html += `&nbsp;&nbsp;• Generated content (${s.outputDir}): <b>${fmt(s.content)}</b>`;
@@ -1316,11 +1319,14 @@ async function attachPageHandlers() {
 
     // Uninstall button
     document.getElementById('btn-uninstall')?.addEventListener('click', async () => {
+      const keepVenv     = document.getElementById('uninstall-keep-venv')?.checked ?? true;
       const keepContent  = document.getElementById('uninstall-keep-content')?.checked ?? true;
       const keepSettings = document.getElementById('uninstall-keep-settings')?.checked ?? true;
-      const lines = ['This will permanently delete:', '  • ML environment (~/.auto_note/venv)'];
+      const lines = ['This will permanently delete:'];
+      if (!keepVenv)     lines.push('  • ML environment (~/.auto_note/venv)');
       if (!keepSettings) lines.push('  • All settings, API keys, and credentials');
       if (!keepContent)  lines.push('  • All generated content (notes, captions, videos…)');
+      if (lines.length === 1) lines.push('  (nothing — all items are set to Keep)');
       lines.push('', 'This cannot be undone. Continue?');
 
       if (!confirm(lines.join('\n'))) return;
@@ -1329,7 +1335,7 @@ async function attachPageHandlers() {
       btn.disabled = true;
       btn.textContent = 'Uninstalling…';
 
-      const result = await window.api.runUninstall(keepContent, keepSettings);
+      const result = await window.api.runUninstall(keepContent, keepSettings, keepVenv);
       if (result.ok) {
         const isWin = result.platform === 'win32';
         alert(
@@ -1435,4 +1441,15 @@ async function init() {
   renderPage();
 }
 
-init();
+init().catch(err => {
+  // If init() throws (e.g. IPC timeout or JS error), show a visible error
+  // instead of a silent blank screen.
+  document.body.innerHTML =
+    `<div style="padding:40px;font-family:monospace;color:#EF5350;background:#1E2A2A;height:100vh">
+      <h2 style="margin-bottom:16px">AutoNote failed to start</h2>
+      <pre style="white-space:pre-wrap;font-size:12px">${String(err?.stack || err)}</pre>
+      <p style="margin-top:16px;color:#aaa;font-size:12px">
+        Press F12 to open DevTools for more details, then reload (Ctrl+R).
+      </p>
+    </div>`;
+});
