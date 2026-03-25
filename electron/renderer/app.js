@@ -1303,9 +1303,14 @@ async function attachPageHandlers() {
       if (!el) return;
       try {
         const s = await window.api.getUninstallSizes();
-        const fmt = mb => mb >= 1024 ? `${(mb/1024).toFixed(1)} GB` : `${mb} MB`;
+        const fmt = mb => {
+          if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+          if (mb >= 1)    return `${mb} MB`;
+          return '< 1 MB';
+        };
+        const venvLabel = s.venv === 0 ? '<span style="color:var(--c-white-45)">not installed</span>' : `<b>${fmt(s.venv)}</b>`;
         let html = `<b>Disk usage (controlled by checkboxes below):</b><br>`;
-        html += `&nbsp;&nbsp;• ML Environment (~/.auto_note/venv): <b>${fmt(s.venv)}</b><br>`;
+        html += `&nbsp;&nbsp;• ML Environment (~/.auto_note/venv): ${venvLabel}<br>`;
         html += `&nbsp;&nbsp;• Settings &amp; config (~/.auto_note/): <b>${fmt(s.settings)}</b><br>`;
         if (s.content !== null) {
           html += `&nbsp;&nbsp;• Generated content (${s.outputDir}): <b>${fmt(s.content)}</b>`;

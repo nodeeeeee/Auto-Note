@@ -6,7 +6,7 @@ const os     = require('os');
 const fs     = require('fs');
 const https  = require('https');
 const http   = require('http');
-const { spawnSync, spawn } = require('child_process');
+const { spawnSync, spawn, exec } = require('child_process');
 
 // ── Optional: node-pty for real tty on Unix (tqdm in-place refresh) ──────────
 let nodePty = null;
@@ -627,37 +627,44 @@ function discoverLectures(courseId) {
 }
 
 // ── Uninstall helpers ─────────────────────────────────────────────────────────
-async function getDirSizeBytes(dirPath) {
-  let bytes = 0;
-  try {
-    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
-    await Promise.all(entries.map(async e => {
-      const full = path.join(dirPath, e.name);
-      if (e.isDirectory()) {
-        bytes += await getDirSizeBytes(full);
-      } else {
-        try { bytes += (await fs.promises.stat(full)).size; } catch {}
-      }
-    }));
-  } catch {}
-  return bytes;
+// Returns directory size in MB using native OS tools (non-blocking, fast).
+function getDirSizeMBNative(dirPath) {
+  return new Promise(resolve => {
+    if (!fs.existsSync(dirPath)) { resolve(0); return; }
+    if (process.platform === 'win32') {
+      // PowerShell: sum all file lengths under the directory
+      const esc = dirPath.replace(/'/g, "''");
+      const cmd = `powershell -NoProfile -NonInteractive -Command ` +
+        `"(Get-ChildItem -LiteralPath '${esc}' -Recurse -File ` +
+        `-ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum"`;
+      exec(cmd, { timeout: 30000, windowsHide: true }, (_, stdout) => {
+        const bytes = parseInt((stdout || '').trim()) || 0;
+        resolve(Math.round(bytes / 1048576));
+      });
+    } else {
+      // Linux / macOS: du -sm gives megabytes directly
+      const esc = dirPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      exec(`du -sm -- "${esc}"`, { timeout: 30000 }, (err, stdout) => {
+        if (err) { resolve(0); return; }
+        const mb = parseInt((stdout || '').trim().split(/\s+/)[0]) || 0;
+        resolve(mb);
+      });
+    }
+  });
 }
 
 async function getDirSizeMB(dirPath, excludeDirs = []) {
-  let bytes = 0;
-  try {
-    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
-    await Promise.all(entries.map(async e => {
-      if (excludeDirs.includes(e.name)) return;
-      const full = path.join(dirPath, e.name);
-      if (e.isDirectory()) {
-        bytes += await getDirSizeBytes(full);
-      } else {
-        try { bytes += (await fs.promises.stat(full)).size; } catch {}
-      }
-    }));
-  } catch {}
-  return Math.round(bytes / (1024 * 1024));
+  if (!fs.existsSync(dirPath)) return 0;
+  const total = await getDirSizeMBNative(dirPath);
+  if (excludeDirs.length === 0) return total;
+  // Subtract excluded subdirs from the total
+  const excluded = await Promise.all(
+    excludeDirs
+      .map(d => path.join(dirPath, d))
+      .filter(p => fs.existsSync(p))
+      .map(getDirSizeMBNative)
+  );
+  return Math.max(0, total - excluded.reduce((a, b) => a + b, 0));
 }
 
 function rmRecursive(dirPath) {
