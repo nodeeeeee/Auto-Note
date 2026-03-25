@@ -679,7 +679,6 @@ async function loadLectureDropdown(cid) {
   }
   sel.innerHTML = opts;
 
-  const numbered   = lecs.filter(l => l.num != null);
   const alignCount = lecs[0]?.alignCount ?? 0;
   const alignHint  = alignCount > 0 ? `  ·  ${alignCount} alignment file(s) ready` : '  ·  no alignment files yet';
   if (status) status.textContent = `${numbered.length} lecture(s) found${alignHint}`;
