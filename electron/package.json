@@ -1,6 +1,6 @@
 {
   "name": "auto-note",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "AutoNote — lecture notes generator from Canvas recordings",
   "main": "main.js",
   "scripts": {
@@ -48,7 +48,10 @@
       "shortcutName": "AutoNote"
     },
     "mac": {
-      "target": "dmg",
+      "target": {
+        "target": "dmg",
+        "arch": ["x64", "arm64"]
+      },
       "icon": "../assets/icon.icns"
     },
     "extraResources": [

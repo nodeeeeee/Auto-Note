@@ -22,11 +22,8 @@ jobs:
           - os: windows-latest
             platform: windows
 
-          - os: macos-13            # Intel (x86_64)
-            platform: macos-intel
-
-          - os: macos-latest        # Apple Silicon (arm64)
-            platform: macos-arm
+          - os: macos-latest        # builds universal DMG (x64 + arm64)
+            platform: macos
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.platform }})
@@ -49,7 +46,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libglib2.0-dev fuse libfuse2 rpm dpkg
+            libgtk-3-dev libglib2.0-dev fuse libfuse2 rpm \
+            dpkg fakeroot
 
       # ── Python 3.11 for node-gyp ─────────────────────────────────────────────
       # distutils was removed in Python 3.12. node-gyp (used to rebuild
@@ -84,16 +82,8 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: false
           npm_config_python: python
 
-      - name: Build (macOS Intel)
-        if: matrix.platform == 'macos-intel'
-        working-directory: electron
-        run: npm run build-mac
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: false
-          npm_config_python: python
-
-      - name: Build (macOS ARM)
-        if: matrix.platform == 'macos-arm'
+      - name: Build (macOS universal)
+        if: matrix.platform == 'macos'
         working-directory: electron
         run: npm run build-mac
         env:
