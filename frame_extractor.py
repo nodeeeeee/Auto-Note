@@ -49,12 +49,133 @@ _SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 
 # Range 0.0-1.0.  0.3 works well for slide transitions; use 0.2 for subtle changes.
 SCENE_THRESHOLD = 0.3
 
+# Number of sample frames to use for screen-vs-camera classification.
+CLASSIFY_SAMPLE_FRAMES = 6
+
 # Minimum seconds between extracted frames (avoids near-duplicate frames from
 # quick animations or cursor flickers).
 MIN_SCENE_GAP = 2.0
 
 # Maximum number of frames to extract (safety limit for very long recordings).
 MAX_FRAMES = 500
+
+
+# ── Screen vs Camera auto-detection ──────────────────────────────────────────
+
+def classify_video(video_path: Path) -> str:
+    """Classify a video as 'screen' or 'camera' by analyzing sample frames.
+
+    Extracts a few evenly-spaced frames and uses heuristics:
+    - Screen recordings: sharp edges, high contrast, uniform backgrounds,
+      lots of text/UI elements, low color variance in large regions
+    - Camera recordings: smooth gradients, natural colors, motion blur,
+      faces/bodies, varied lighting
+
+    Returns 'screen' or 'camera'.
+    """
+    import tempfile
+
+    duration = get_video_duration(video_path)
+    if duration <= 0:
+        return "camera"  # can't determine, default to camera
+
+    # Sample frames evenly across the video (skip first/last 10%)
+    start = duration * 0.1
+    end = duration * 0.9
+    n = CLASSIFY_SAMPLE_FRAMES
+    timestamps = [start + i * (end - start) / (n - 1) for i in range(n)]
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="classify_"))
+    frame_paths = []
+    for i, ts in enumerate(timestamps):
+        png = tmp_dir / f"sample_{i}.png"
+        subprocess.run(
+            ["ffmpeg", "-ss", f"{ts:.1f}", "-i", str(video_path),
+             "-frames:v", "1", "-q:v", "2", str(png), "-y"],
+            capture_output=True, timeout=30,
+            creationflags=_SUBPROCESS_FLAGS,
+        )
+        if png.exists():
+            frame_paths.append(png)
+
+    if not frame_paths:
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return "camera"
+
+    # Analyze frames with image heuristics
+    screen_votes = 0
+    try:
+        from PIL import Image as PILImage
+        import statistics
+
+        for fp in frame_paths:
+            img = PILImage.open(fp).convert("RGB")
+            w, h = img.size
+
+            # Heuristic 1: Edge density (screen recordings have sharp edges)
+            # Use a simple Laplacian-like approach via pixel differences
+            pixels = list(img.getdata())
+            row_diffs = 0
+            for y in range(0, h - 1, 4):
+                for x in range(0, w - 1, 4):
+                    idx = y * w + x
+                    idx_r = idx + 1
+                    if idx_r < len(pixels):
+                        diff = sum(abs(a - b) for a, b in zip(pixels[idx], pixels[idx_r]))
+                        if diff > 100:  # sharp edge threshold
+                            row_diffs += 1
+
+            total_samples = (h // 4) * (w // 4)
+            edge_ratio = row_diffs / max(total_samples, 1)
+
+            # Heuristic 2: Color uniformity (screen recordings have large
+            # uniform regions — backgrounds, toolbars)
+            # Sample a grid and check how many blocks have low variance
+            block_size = 32
+            uniform_blocks = 0
+            total_blocks = 0
+            for by in range(0, h - block_size, block_size):
+                for bx in range(0, w - block_size, block_size):
+                    block = img.crop((bx, by, bx + block_size, by + block_size))
+                    block_pixels = list(block.getdata())
+                    r_vals = [p[0] for p in block_pixels]
+                    g_vals = [p[1] for p in block_pixels]
+                    b_vals = [p[2] for p in block_pixels]
+                    total_blocks += 1
+                    # Low variance = uniform color
+                    if (statistics.stdev(r_vals) < 15 and
+                        statistics.stdev(g_vals) < 15 and
+                        statistics.stdev(b_vals) < 15):
+                        uniform_blocks += 1
+
+            uniformity = uniform_blocks / max(total_blocks, 1)
+
+            # Heuristic 3: Brightness distribution (screens tend toward
+            # high brightness with white backgrounds)
+            brightness = [sum(p) / 3 for p in pixels[::16]]
+            avg_brightness = statistics.mean(brightness)
+            bright_ratio = sum(1 for b in brightness if b > 200) / len(brightness)
+
+            # Vote: screen if sharp edges + uniform regions + bright
+            is_screen = (
+                (edge_ratio > 0.08 and uniformity > 0.4) or
+                (uniformity > 0.55 and bright_ratio > 0.3) or
+                (edge_ratio > 0.12 and bright_ratio > 0.4)
+            )
+            if is_screen:
+                screen_votes += 1
+
+    except ImportError:
+        # PIL not available — fall back to OpenAI vision API
+        pass
+    finally:
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    result = "screen" if screen_votes > len(frame_paths) / 2 else "camera"
+    print(f"  Video classification: {result} ({screen_votes}/{len(frame_paths)} frames voted screen)")
+    return result
 
 
 # ── Scene detection via ffmpeg ───────────────────────────────────────────────
@@ -254,10 +375,15 @@ def extract_and_align(
     video_path: Path,
     caption_path: Path | None,
     course_dir: Path,
+    skip_classify: bool = False,
 ) -> tuple[Path | None, Path | None]:
-    """Full pipeline: detect scenes → extract frames → build alignment.
+    """Full pipeline: classify video → detect scenes → extract frames → build alignment.
 
-    Returns (frame_dir, alignment_path) or (None, None) on failure.
+    If the video is detected as a camera recording (not screen), returns
+    (None, None) so the caller can fall back to slide-based alignment.
+    Use skip_classify=True to force frame extraction regardless.
+
+    Returns (frame_dir, alignment_path) or (None, None) on failure/skip.
     """
     video_stem = video_path.stem
     frame_dir = course_dir / "frames" / video_stem
@@ -265,8 +391,17 @@ def extract_and_align(
     align_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'=' * 70}")
-    print(f"Screen share frame extraction: {video_stem}")
+    print(f"Frame extraction: {video_stem}")
     print(f"{'=' * 70}")
+
+    # Auto-classify: screen recording or camera?
+    if not skip_classify:
+        video_type = classify_video(video_path)
+        if video_type == "camera":
+            print(f"  Video classified as CAMERA recording — skipping frame extraction.")
+            print(f"  Use slide-based alignment instead.")
+            return None, None
+        print(f"  Video classified as SCREEN recording — extracting frames.")
 
     # Step 1: Detect scenes
     print("  Detecting scene changes...")
@@ -307,12 +442,16 @@ def extract_and_align(
 # ── Course-level auto-discovery ──────────────────────────────────────────────
 
 def process_course(course_id: str, base_dir: Path) -> int:
-    """Auto-discover screen share videos for a course and extract frames.
+    """Auto-discover videos for a course, classify them, and extract frames.
 
-    Reads the manifest to find videos with stream_tag="SS", then runs
-    frame extraction + alignment for each.
+    Reads the manifest to find all downloaded videos for the course.
+    For each video:
+      - If stream_tag is "SS" → always extract frames (known screen share)
+      - Otherwise → auto-classify the video content as screen or camera
+      - Screen recordings → extract frames + build alignment
+      - Camera recordings → skip (use slide-based alignment instead)
 
-    Returns the number of videos processed.
+    Returns the number of screen-recording videos processed.
     """
     manifest_file = DATA_DIR / "manifest.json"
     if not manifest_file.exists():
@@ -327,8 +466,6 @@ def process_course(course_id: str, base_dir: Path) -> int:
 
     for key, entry in manifest.items():
         if entry.get("status") != "done":
-            continue
-        if entry.get("stream_tag") != "SS":
             continue
 
         video_path = Path(entry["path"])
@@ -359,11 +496,16 @@ def process_course(course_id: str, base_dir: Path) -> int:
             print(f"  [skip] No caption for: {video_stem} (transcribe first)")
             continue
 
-        extract_and_align(video_path, caption_path, course_dir)
-        processed += 1
+        # For SS-tagged streams, skip classification (known screen share)
+        skip_classify = (entry.get("stream_tag", "").upper() == "SS")
+        result = extract_and_align(video_path, caption_path, course_dir,
+                                   skip_classify=skip_classify)
+        if result[0] is not None:
+            processed += 1
 
     if processed == 0:
-        print("[info] No screen share (SS) videos found for this course.")
+        print("[info] No screen-recording videos found for this course.")
+        print("       All videos appear to be camera recordings — use slide-based alignment.")
     return processed
 
 

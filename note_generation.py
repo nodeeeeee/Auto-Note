@@ -1461,11 +1461,12 @@ def _discover_screenshare_lectures(course_dir: Path) -> list[LectureData]:
 def _discover_lectures(course_dir: Path) -> list[LectureData]:
     exts    = {".pdf", ".pptx", ".ppt", ".docx", ".doc"}
 
-    # ── Check for screen share lectures first ────────────────────────────────
+    # ── Check for screen share lectures from extracted frames ────────────────
     ss_lectures = _discover_screenshare_lectures(course_dir)
     if ss_lectures:
         tqdm.write(f"  Found {len(ss_lectures)} screen share lecture(s) from extracted frames")
-        return ss_lectures
+        # Also discover slide-based lectures for camera recordings
+        # (a course may have both screen and camera videos)
 
     # ── Traditional slide-based discovery ─────────────────────────────────────
 
@@ -1542,6 +1543,16 @@ def _discover_lectures(course_dir: Path) -> list[LectureData]:
         for file_idx, sp in enumerate(files, start=1):
             align = _find_alignment(sp, course_dir)
             lectures.append(LectureData(lec_num, sp, align, file_idx=file_idx))
+
+    # Combine with screen share lectures (if any)
+    if ss_lectures:
+        # Renumber screenshare lectures to avoid collisions with slide lectures
+        max_num = max((ld.num for ld in lectures), default=0)
+        for ld in ss_lectures:
+            ld.num = max_num + ld.num
+        all_lectures = lectures + ss_lectures
+        return all_lectures
+
     return lectures
 
 
