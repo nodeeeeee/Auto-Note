@@ -717,7 +717,10 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
         use cached Panopto cookies from discovery, or re-authenticate via the
         Videos/Panopto tab, then call stream URL directly.
     """
-    import PanoptoDownloader
+    try:
+        import PanoptoDownloader
+    except ImportError:
+        PanoptoDownloader = None
 
     item_id    = video["item_id"]
     course_id  = video["course_id"]
@@ -792,18 +795,32 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
             # Direct authenticated download (e.g. REST API DownloadUrl)
             _download_authenticated(stream_url, out_path, dl_headers, progress_cb)
         elif "master.m3u8" in stream_url:
-            # HLS stream — use ffmpeg (handles query params that PanoptoDownloader misses)
+            # HLS stream — prefer ffmpeg, fall back to PanoptoDownloader
             from shutil import which
-            from ffmpeg_progress_yield import FfmpegProgress
             if which("ffmpeg"):
-                cmd = ["ffmpeg", "-f", "hls", "-i", stream_url, "-c", "copy", str(out_path)]
-                ff = FfmpegProgress(cmd)
-                for pct in ff.run_command_with_progress():
-                    progress_cb(pct)
-            else:
+                try:
+                    from ffmpeg_progress_yield import FfmpegProgress
+                    cmd = ["ffmpeg", "-f", "hls", "-i", stream_url, "-c", "copy", str(out_path)]
+                    ff = FfmpegProgress(cmd)
+                    for pct in ff.run_command_with_progress():
+                        progress_cb(pct)
+                except ImportError:
+                    # ffmpeg-progress-yield not installed — call ffmpeg directly
+                    import subprocess
+                    tqdm.write("  (ffmpeg-progress-yield not available, running ffmpeg without progress)")
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-f", "hls", "-i", stream_url, "-c", "copy", str(out_path)],
+                        capture_output=True, timeout=3600,
+                    )
+                    progress_cb(100)
+            elif PanoptoDownloader:
                 PanoptoDownloader.download(stream_url, str(out_path), progress_cb)
-        else:
+            else:
+                raise RuntimeError("Neither ffmpeg nor PanoptoDownloader available")
+        elif PanoptoDownloader:
             PanoptoDownloader.download(stream_url, str(out_path), progress_cb)
+        else:
+            raise RuntimeError("Non-HLS stream and PanoptoDownloader not installed")
         bar.n = 100
         bar.refresh()
         bar.close()
