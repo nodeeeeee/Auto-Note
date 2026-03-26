@@ -66,6 +66,9 @@ CANVAS_URL   = _config.get("CANVAS_URL",   "").strip().rstrip("/")
 if CANVAS_URL and not CANVAS_URL.startswith(("http://", "https://")):
     CANVAS_URL = "https://" + CANVAS_URL
 PANOPTO_HOST = _config.get("PANOPTO_HOST", "")
+# Strip protocol prefix if user accidentally stored a full URL (e.g. "https://mediaweb.ap.panopto.com")
+if PANOPTO_HOST.startswith(("https://", "http://")):
+    PANOPTO_HOST = re.sub(r'^https?://', '', PANOPTO_HOST).split('/')[0]
 
 _canvas_token_file = DATA_DIR / "canvas_token.txt"
 CANVAS_TOKEN = (

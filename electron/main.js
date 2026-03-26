@@ -23,14 +23,37 @@ const VENV_PYTHON = process.platform === 'win32'
 const PROJECT_DIR = path.join(__dirname, '..');
 const SCRIPTS_DIR_INSTALLED = path.join(DATA_DIR, 'scripts');
 
+function syncScripts() {
+  // On first launch and after updates, copy bundled scripts from read-only
+  // resources into DATA_DIR/scripts/ so writeConstant() can patch them.
+  if (!process.resourcesPath) return;   // dev mode — scripts are already writable
+  const srcDir = path.join(process.resourcesPath, 'scripts');
+  if (!fs.existsSync(srcDir)) return;
+  try {
+    if (!fs.existsSync(SCRIPTS_DIR_INSTALLED))
+      fs.mkdirSync(SCRIPTS_DIR_INSTALLED, { recursive: true });
+    for (const name of fs.readdirSync(srcDir)) {
+      const src = path.join(srcDir, name);
+      const dst = path.join(SCRIPTS_DIR_INSTALLED, name);
+      const srcTxt = fs.readFileSync(src, 'utf8');
+      // Overwrite only if missing or if the bundled copy changed (app update).
+      if (!fs.existsSync(dst) || fs.readFileSync(dst, 'utf8') !== srcTxt)
+        fs.writeFileSync(dst, srcTxt);
+    }
+  } catch { /* non-fatal */ }
+}
+syncScripts();  // run before SCRIPTS is built so scriptPath() finds the copies
+
 function scriptPath(name) {
-  // 1. Packaged resources always win when running as AppImage/exe/dmg
-  //    (ensures bundled scripts are never shadowed by stale installed copies)
+  // 1. Writable copy in DATA_DIR/scripts/ (preferred — supports writeConstant)
+  const installed = path.join(SCRIPTS_DIR_INSTALLED, name);
+  if (fs.existsSync(installed)) return installed;
+  // 2. Packaged read-only resources (fallback before sync completes)
   if (process.resourcesPath) {
     const packed = path.join(process.resourcesPath, 'scripts', name);
     if (fs.existsSync(packed)) return packed;
   }
-  // 2. Dev mode: sibling of electron/
+  // 3. Dev mode: sibling of electron/
   return path.join(PROJECT_DIR, name);
 }
 
@@ -78,6 +101,13 @@ function saveConfig(data) {
   const f   = path.join(DATA_DIR, 'config.json');
   const cfg = loadConfig();
   Object.assign(cfg, data);
+  // Normalise PANOPTO_HOST: strip any accidental https:// prefix or trailing path
+  if (cfg.PANOPTO_HOST) {
+    cfg.PANOPTO_HOST = cfg.PANOPTO_HOST
+      .replace(/^https?:\/\//i, '')
+      .split('/')[0]
+      .trim();
+  }
   fs.writeFileSync(f, JSON.stringify(cfg, null, 2));
 }
 
