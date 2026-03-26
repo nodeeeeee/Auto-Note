@@ -384,11 +384,6 @@ def main() -> None:
 
     _update_threshold(args.threshold)
 
-
-def _update_threshold(val: float) -> None:
-    global SCENE_THRESHOLD
-    SCENE_THRESHOLD = val
-
     if args.course:
         base_dir = Path(args.path) if args.path else COURSE_DATA_DIR
         process_course(args.course, base_dir)
@@ -406,6 +401,11 @@ def _update_threshold(val: float) -> None:
             course_dir = video_path.parent.parent
 
         extract_and_align(video_path, caption_path, course_dir)
+
+
+def _update_threshold(val: float) -> None:
+    global SCENE_THRESHOLD
+    SCENE_THRESHOLD = val
 
 
 if __name__ == "__main__":
