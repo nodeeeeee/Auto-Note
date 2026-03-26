@@ -1380,7 +1380,33 @@ def _content_match_slide_group(
     return [best]
 
 
-def process_course(course_id: int | str, use_jina: bool = False) -> None:
+def _load_mapping(mapping_path: Path, course_dir: Path) -> dict[str, list[Path]]:
+    """Load a user-supplied video↔slide mapping JSON.
+
+    Format: {"caption_stem": ["path/to/slide.pdf", ...], ...}
+    Paths are relative to course_dir or absolute.
+    Returns {caption_stem: [resolved_Path, ...]}.
+    """
+    with open(mapping_path, encoding="utf-8") as f:
+        raw = json.load(f)
+    mapping: dict[str, list[Path]] = {}
+    for cap_stem, slide_list in raw.items():
+        resolved = []
+        for sp in slide_list:
+            p = Path(sp)
+            if not p.is_absolute():
+                p = course_dir / p
+            if p.exists():
+                resolved.append(p)
+            else:
+                print(f"  [warn] Mapped slide not found: {sp}")
+        if resolved:
+            mapping[cap_stem] = resolved
+    return mapping
+
+
+def process_course(course_id: int | str, use_jina: bool = False,
+                   mapping_path: Path | None = None) -> None:
     course_dir  = COURSE_DATA_DIR / str(course_id)
     captions_dir = course_dir / "captions"
     print(f"Course dir : {course_dir}", flush=True)
@@ -1401,6 +1427,14 @@ def process_course(course_id: int | str, use_jina: bool = False) -> None:
 
     print(f"Found {len(captions)} caption(s), {len(all_slides)} slide file(s).", flush=True)
 
+    # ── Load user-supplied mapping if provided ────────────────────────────────
+    user_mapping: dict[str, list[Path]] = {}
+    if mapping_path and mapping_path.exists():
+        user_mapping = _load_mapping(mapping_path, course_dir)
+        print(f"  User mapping: {len(user_mapping)} video→slide pair(s) loaded")
+        for cap_stem, slides in user_mapping.items():
+            print(f"    {cap_stem} → {[s.name for s in slides]}")
+
     # Check Jina API availability if requested
     if use_jina:
         jina_key = _get_jina_key()
@@ -1417,7 +1451,7 @@ def process_course(course_id: int | str, use_jina: bool = False) -> None:
         if num is not None:
             slides_by_num[num].append(sp)
 
-    embedder = None if use_jina else get_embedder()
+    embedder = None if use_jina else None  # lazy-load only when needed
 
     for cap in captions:
         # Skip captions flagged as low-quality (wrong/empty recordings)
@@ -1430,20 +1464,24 @@ def process_course(course_id: int | str, use_jina: bool = False) -> None:
         except Exception:
             pass   # can't read → proceed and let align() handle it
 
-        # Find matching slides
-        if embedder is None and not use_jina:
-            embedder = get_embedder()
-
-        slide_group = _find_best_slide_group(cap, slides_by_num, all_slides)
-        if not slide_group:
-            if embedder is None:
-                embedder = get_embedder()
-            slide_group = _content_match_slide_group(
-                cap, slides_by_num, all_slides, embedder
-            )
-        if not slide_group:
-            print(f"  [warn] No matching slides for {cap.name} — skipping")
-            continue
+        # ── Priority 1: user-supplied mapping ────────────────────────────────
+        slide_group: list[Path] = []
+        if cap.stem in user_mapping:
+            slide_group = user_mapping[cap.stem]
+            print(f"  [mapping] {cap.name} → {[s.name for s in slide_group]}")
+        else:
+            # ── Priority 2: automatic name/number matching ───────────────────
+            slide_group = _find_best_slide_group(cap, slides_by_num, all_slides)
+            if not slide_group:
+                # ── Priority 3: content embedding fallback ───────────────────
+                if embedder is None:
+                    embedder = get_embedder()
+                slide_group = _content_match_slide_group(
+                    cap, slides_by_num, all_slides, embedder
+                )
+            if not slide_group:
+                print(f"  [warn] No matching slides for {cap.name} — skipping")
+                continue
 
         # Check if all output files for this group already exist
         if len(slide_group) == 1:
@@ -1463,8 +1501,6 @@ def process_course(course_id: int | str, use_jina: bool = False) -> None:
                 continue
             # Fall back to text-based on failure
             print("  [jina] Falling back to text-based alignment")
-            if embedder is None:
-                embedder = get_embedder()
 
         if embedder is None:
             embedder = get_embedder()
@@ -1486,10 +1522,15 @@ def main() -> None:
                         help="Output directory (default: [course]/alignment)")
     parser.add_argument("--jina",    action="store_true",
                         help="Use Jina Embeddings v4 for multimodal (image+text) alignment")
+    parser.add_argument("--mapping", metavar="JSON",
+                        help="User-supplied video↔slide mapping JSON file. "
+                             "Format: {\"caption_stem\": [\"slide_path\", ...]}. "
+                             "Unmapped captions fall back to auto-discovery.")
     args = parser.parse_args()
 
     if args.course:
-        process_course(args.course, use_jina=args.jina)
+        mapping = Path(args.mapping) if args.mapping else None
+        process_course(args.course, use_jina=args.jina, mapping_path=mapping)
         return
 
     if not args.caption or not args.slides:
