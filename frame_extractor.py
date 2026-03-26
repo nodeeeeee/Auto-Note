@@ -178,15 +178,50 @@ def classify_video(video_path: Path) -> str:
     return result
 
 
-# ── Scene detection via ffmpeg ───────────────────────────────────────────────
+# ── Perceptual hashing for frame deduplication ───────────────────────────────
+
+def _perceptual_hash(img, hash_size: int = 16) -> int:
+    """Compute a difference hash (dHash) for a PIL Image.
+
+    Resizes to (hash_size+1, hash_size) grayscale, then compares adjacent
+    pixels to produce a hash_size² bit integer. Two similar images will
+    have hashes with low Hamming distance.
+    """
+    from PIL import Image as PILImage
+    small = img.convert("L").resize((hash_size + 1, hash_size), PILImage.LANCZOS)
+    pixels = list(small.getdata())
+    w = hash_size + 1
+    bits = 0
+    for y in range(hash_size):
+        for x in range(hash_size):
+            bits = (bits << 1) | (1 if pixels[y * w + x] < pixels[y * w + x + 1] else 0)
+    return bits
+
+
+def _hamming(a: int, b: int) -> int:
+    """Hamming distance between two integers (number of differing bits)."""
+    return bin(a ^ b).count("1")
+
+
+# ── Intelligent scene detection ──────────────────────────────────────────────
 
 def detect_scenes(video_path: Path, threshold: float = SCENE_THRESHOLD,
                   min_gap: float = MIN_SCENE_GAP) -> list[float]:
-    """Detect scene change timestamps in a video using ffmpeg's scene filter.
+    """Detect unique slide/screen changes in a video.
 
-    Returns a sorted list of timestamps (seconds) where scene changes occur.
-    The first timestamp is always 0.0 (start of video).
+    Strategy (two-pass):
+      1. Use ffmpeg scene filter to find raw scene-change timestamps
+      2. If too few detected (common with camera/lecture videos), fall back
+         to periodic sampling every 10 seconds
+      3. Extract a candidate frame at each timestamp
+      4. Compute perceptual hashes (dHash) to deduplicate — only keep frames
+         that differ significantly from the previous kept frame
+
+    This prevents both missing slides and keeping duplicate frames.
     """
+    duration = get_video_duration(video_path)
+
+    # ── Pass 1: ffmpeg scene detection ───────────────────────────────────────
     cmd = [
         "ffmpeg", "-i", str(video_path),
         "-vf", f"select='gt(scene\\,{threshold})',showinfo",
@@ -199,21 +234,81 @@ def detect_scenes(video_path: Path, threshold: float = SCENE_THRESHOLD,
         creationflags=_SUBPROCESS_FLAGS,
     )
 
-    # Parse timestamps from ffmpeg showinfo output
-    timestamps = [0.0]  # Always include the start
+    raw_timestamps = [0.0]
     pattern = re.compile(r"pts_time:(\d+\.?\d*)")
-
     for line in result.stderr.splitlines():
         if "showinfo" in line and "pts_time" in line:
             m = pattern.search(line)
             if m:
                 ts = float(m.group(1))
-                # Enforce minimum gap
-                if ts - timestamps[-1] >= min_gap:
-                    timestamps.append(ts)
+                if ts - raw_timestamps[-1] >= min_gap:
+                    raw_timestamps.append(ts)
 
-    print(f"  Detected {len(timestamps)} scene changes (threshold={threshold})")
-    return timestamps[:MAX_FRAMES]
+    print(f"  Scene filter: {len(raw_timestamps)} raw candidates (threshold={threshold})")
+
+    # ── Pass 2: if too few, add periodic samples ─────────────────────────────
+    SAMPLE_INTERVAL = 10.0  # seconds
+    if len(raw_timestamps) < 5 and duration > 60:
+        print(f"  Too few scene changes — adding periodic samples every {SAMPLE_INTERVAL}s")
+        periodic = [t for t in
+                    (i * SAMPLE_INTERVAL for i in range(int(duration / SAMPLE_INTERVAL) + 1))
+                    if t < duration]
+        # Merge with scene-detected timestamps, remove near-duplicates
+        combined = sorted(set(raw_timestamps + periodic))
+        merged: list[float] = [combined[0]]
+        for ts in combined[1:]:
+            if ts - merged[-1] >= min_gap:
+                merged.append(ts)
+        raw_timestamps = merged
+        print(f"  After merge: {len(raw_timestamps)} candidates")
+
+    # ── Pass 3: extract candidate frames and deduplicate via perceptual hash ─
+    import tempfile
+    tmp_dir = Path(tempfile.mkdtemp(prefix="scene_dedup_"))
+    HASH_THRESHOLD = 30  # dHash bits that must differ to consider "new slide"
+
+    try:
+        from PIL import Image as PILImage
+
+        unique_timestamps: list[float] = []
+        prev_hash: int | None = None
+
+        print(f"  Deduplicating {len(raw_timestamps)} candidates via perceptual hash...")
+        for ts in raw_timestamps[:MAX_FRAMES * 2]:
+            png = tmp_dir / f"cand_{ts:.1f}.png"
+            subprocess.run(
+                ["ffmpeg", "-ss", f"{ts:.3f}", "-i", str(video_path),
+                 "-frames:v", "1", "-q:v", "3", str(png), "-y"],
+                capture_output=True, timeout=30,
+                creationflags=_SUBPROCESS_FLAGS,
+            )
+            if not png.exists():
+                continue
+
+            img = PILImage.open(png)
+            h = _perceptual_hash(img)
+
+            if prev_hash is None or _hamming(h, prev_hash) >= HASH_THRESHOLD:
+                unique_timestamps.append(ts)
+                prev_hash = h
+            # else: duplicate frame, skip
+
+            png.unlink()  # free disk space
+
+        print(f"  Unique frames after dedup: {len(unique_timestamps)}")
+
+    except ImportError:
+        print("  [warn] PIL not available — skipping deduplication")
+        unique_timestamps = raw_timestamps
+
+    finally:
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    if not unique_timestamps:
+        unique_timestamps = [0.0]
+
+    return unique_timestamps[:MAX_FRAMES]
 
 
 def get_video_duration(video_path: Path) -> float:
@@ -403,18 +498,9 @@ def extract_and_align(
             return None, None
         print(f"  Video classified as SCREEN recording — extracting frames.")
 
-    # Step 1: Detect scenes
+    # Step 1: Detect unique scenes (scene filter + periodic fallback + dedup)
     print("  Detecting scene changes...")
     timestamps = detect_scenes(video_path)
-    if len(timestamps) < 2:
-        print("  [warn] Too few scene changes detected, using uniform sampling")
-        duration = get_video_duration(video_path)
-        if duration > 0:
-            # Sample every 30 seconds
-            timestamps = [i * 30.0 for i in range(int(duration / 30) + 1)]
-        else:
-            print("  [error] Cannot determine video duration")
-            return None, None
 
     # Step 2: Extract frames
     print(f"  Extracting {len(timestamps)} frames...")
