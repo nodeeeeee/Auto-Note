@@ -601,20 +601,21 @@ def _get_stream_url(
 ) -> tuple[str, dict] | None:
     """Get the HLS stream URL for a Panopto session.
 
-    Returns (stream_url, auth_headers) on success, None on failure.
+    Returns (stream_url, auth_headers, stream_tag) on success, None on failure.
     auth_headers is always {} (HLS streams are CDN-public once the URL is known).
+    stream_tag is the Panopto stream tag ("SS" for screen share, "DV" for camera, etc.).
 
     Priority:
       1. DeliveryInfo.aspx POST with Bearer token → HLS master.m3u8
       2. Playwright LTI re-launch → navigate to Viewer.aspx → intercept DeliveryInfo
     """
-    def _extract_stream(body: dict) -> str | None:
+    def _extract_stream(body: dict) -> tuple[str, str] | None:
         streams = (body.get("Delivery") or {}).get("Streams") or []
-        for tag in ("DV", "OBJECT", None):
+        for tag in ("SS", "DV", "OBJECT", None):
             for s in streams:
                 surl = s.get("StreamUrl", "")
                 if surl and (tag is None or s.get("Tag") == tag):
-                    return surl
+                    return surl, s.get("Tag", "unknown")
         return None
 
     sess = requests.Session()
@@ -643,9 +644,10 @@ def _get_stream_url(
         if r.status_code == 200:
             body = r.json()
             if not body.get("ErrorCode"):
-                surl = _extract_stream(body)
-                if surl:
-                    return surl, {}
+                result = _extract_stream(body)
+                if result:
+                    surl, stag = result
+                    return surl, {}, stag
     except Exception:
         pass
 
@@ -668,7 +670,7 @@ def _get_stream_url(
     from playwright.sync_api import sync_playwright
 
     viewer_page_url = f"https://{PANOPTO_HOST}/Panopto/Pages/Viewer.aspx?id={session_id}"
-    captured: list[tuple[str, dict]] = []
+    captured: list[tuple[str, dict, str]] = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -679,9 +681,10 @@ def _get_stream_url(
             if "DeliveryInfo.aspx" in resp.url and not captured:
                 try:
                     body = resp.json()
-                    surl = _extract_stream(body)
-                    if surl:
-                        captured.append((surl, {}))
+                    result = _extract_stream(body)
+                    if result:
+                        surl, stag = result
+                        captured.append((surl, {}, stag))
                 except Exception:
                     pass
 
@@ -774,7 +777,8 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
         tqdm.write(f"  [error] Could not get stream URL")
         manifest[key] = {"status": "error", "title": title}
         return False
-    stream_url, dl_headers = result
+    stream_url, dl_headers, stream_tag = result
+    tqdm.write(f"  Stream type: {stream_tag}")
 
     bar = tqdm(total=100, desc=f"  {title[:50]}", unit="%",
                bar_format="{desc} |{bar}| {n:3d}/{total}%", leave=True)
@@ -807,6 +811,7 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
         manifest[key] = {
             "status": "done", "path": str(out_path),
             "title": title, "session_id": session_id,
+            "stream_tag": stream_tag,
         }
         return True
     except Exception as e:

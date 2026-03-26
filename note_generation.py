@@ -452,6 +452,11 @@ def filter_images_pass(
         owner   = pair[1] if pair else None
         img_path = notes_dir / rel
 
+        # ⓪ Screen share frames — always keep (the frame IS the content)
+        if owner and owner.source == "screenshare":
+            decisions[rel] = True
+            continue
+
         # ① Cache-verified AND description mentions visual elements → KEEP
         if slide and owner:
             desc = owner.img_cache.get(f"page_{slide.index}", "")
@@ -737,29 +742,39 @@ def _build_chunk_prompt(
     chunk_title: str,
     detail: int,
     has_transcript: bool,
+    source: str = "slides",
 ) -> str:
     # Slide outline: number, title, first line of text (skip page numbers/headers)
     outline_lines = []
     for s in slides:
-        # Extract meaningful text (skip short lines like "10", "[ CS3210 ]")
-        meaningful = [ln for ln in s.text.splitlines()
-                      if len(ln.strip()) > 8 and not re.match(r"^\d+$", ln.strip())]
-        snippet = " · ".join(meaningful[:3])[:120]
-        outline_lines.append(f"  Slide {s.index+1}: 「{s.label}」  {snippet}")
+        if source == "screenshare":
+            # For screen share, the "slide" is a video frame — no text content,
+            # but the transcript carries all the information
+            outline_lines.append(f"  Frame {s.index+1}: (screen capture at this point)")
+        else:
+            # Extract meaningful text (skip short lines like "10", "[ CS3210 ]")
+            meaningful = [ln for ln in s.text.splitlines()
+                          if len(ln.strip()) > 8 and not re.match(r"^\d+$", ln.strip())]
+            snippet = " · ".join(meaningful[:3])[:120]
+            outline_lines.append(f"  Slide {s.index+1}: 「{s.label}」  {snippet}")
     slide_outline = "\n".join(outline_lines)
 
-    # Image hints
+    # Image hints — for screen share, ALL frames are included as images
     img_hints_lines = []
     for s in slides:
         if s.index not in img_map:
             continue
         rel = img_map[s.index].relative_to(out_dir)
-        cache_key = f"page_{s.index}"
-        desc = img_cache.get(cache_key, "")
-        if desc or s.word_count < 30 or s.has_code:
-            note = desc[:80] if desc else ("有代码" if s.has_code else "有图表")
-            img_hints_lines.append(f"  Slide {s.index+1}: `{rel}` — {note}")
-    image_hints = "\n".join(img_hints_lines) or "  （本片段无图表幻灯片）"
+        if source == "screenshare":
+            # Every frame is relevant for screen share
+            img_hints_lines.append(f"  Frame {s.index+1}: `{rel}` — screen capture")
+        else:
+            cache_key = f"page_{s.index}"
+            desc = img_cache.get(cache_key, "")
+            if desc or s.word_count < 30 or s.has_code:
+                note = desc[:80] if desc else ("有代码" if s.has_code else "有图表")
+                img_hints_lines.append(f"  Slide {s.index+1}: `{rel}` — {note}")
+    image_hints = "\n".join(img_hints_lines) or "  (no images for this segment)"
 
     if has_transcript:
         # Transcript block: [MM:SS Slide N「Title」] transcript...
@@ -842,6 +857,7 @@ def generate_section(
         chunk_title=chunk_title,
         detail=detail,
         has_transcript=has_transcript,
+        source=ld.source,
     )
 
     import time as _time
@@ -1013,11 +1029,14 @@ def _print_score(scores: dict, label: str) -> None:
 
 class LectureData:
     def __init__(self, num: int, slide_path: Path, alignment_path: Path | None,
-                 file_idx: int = 1):
+                 file_idx: int = 1, source: str = "slides",
+                 frame_dir: Path | None = None):
         self.num            = num
         self.file_idx       = file_idx
         self.slide_path     = slide_path
         self.alignment_path = alignment_path
+        self.source         = source       # "slides" or "screenshare"
+        self.frame_dir      = frame_dir    # directory of extracted frame PNGs
         self.slides:         list[SlideInfo] = []
         self.compact:        dict            = {}
         self.compact_slides: list[dict]      = []
@@ -1025,19 +1044,54 @@ class LectureData:
         self.img_map:        dict[int, Path] = {}
 
     def load(self, out_dir: Path) -> None:
-        self.slides = _load_slides(self.slide_path)
+        if self.source == "screenshare" and self.frame_dir:
+            self._load_from_frames(out_dir)
+        else:
+            self.slides = _load_slides(self.slide_path)
         if self.alignment_path and self.alignment_path.exists():
             self.compact = alignment_parser.parse(self.alignment_path)
             self.compact_slides = self.compact.get("slides", [])
-        cache_f = self.slide_path.parent / f"{self.slide_path.name}.image_cache.json"
-        if cache_f.exists():
-            with open(cache_f) as f:
-                self.img_cache = json.load(f)
+        if self.source != "screenshare":
+            cache_f = self.slide_path.parent / f"{self.slide_path.name}.image_cache.json"
+            if cache_f.exists():
+                with open(cache_f) as f:
+                    self.img_cache = json.load(f)
         # img_map is populated lazily per chunk to avoid rendering all slides at once
         self._out_dir = out_dir
 
+    def _load_from_frames(self, out_dir: Path) -> None:
+        """Load 'slides' from extracted video frames instead of PDF/PPTX."""
+        frame_pngs = sorted(self.frame_dir.glob("frame_*.png"))
+        self.slides = []
+        for i, png in enumerate(frame_pngs):
+            # For screen share frames, the text content is minimal (just the label).
+            # The actual content comes from the transcript in the alignment.
+            label = f"Frame {i + 1}"
+            text = label  # placeholder; transcript provides the real content
+            self.slides.append(SlideInfo(i, label, text))
+            # Pre-populate img_map since frames are already extracted
+            self.img_map[i] = png
+
     def render_chunk_images(self, slide_indices: list[int]) -> dict[int, Path]:
         """Render only the slides in this chunk into images/L{num}[_F{idx}]/, cache results."""
+        if self.source == "screenshare":
+            # For screen share, frames are already extracted — just copy/link
+            # them into the notes images/ directory for consistent path references
+            if self.file_idx == 1:
+                img_dir = self._out_dir / "images" / f"L{self.num:02d}"
+            else:
+                img_dir = self._out_dir / "images" / f"L{self.num:02d}_F{self.file_idx:02d}"
+            img_dir.mkdir(parents=True, exist_ok=True)
+            for i in slide_indices:
+                if i in self.img_map:
+                    src = self.img_map[i]
+                    dst = img_dir / f"slide_{i + 1:03d}.png"
+                    if not dst.exists():
+                        import shutil
+                        shutil.copy2(str(src), str(dst))
+                    self.img_map[i] = dst
+            return {i: self.img_map[i] for i in slide_indices if i in self.img_map}
+
         if self.file_idx == 1:
             img_dir = self._out_dir / "images" / f"L{self.num:02d}"
         else:
@@ -1058,6 +1112,9 @@ class LectureData:
             # Strip trailing speaker credit "(by ...)"
             t = re.sub(r"\s*\(by .+\)$", "", t)
             return t.strip()
+        if self.source == "screenshare" and self.frame_dir:
+            stem = self.frame_dir.name
+            return stem.replace("-", " ").replace("_", " ")
         # Fall back to filename stem, removing "L02-" prefix
         stem = re.sub(r"^[Ll]\d+[-_\s]+", "", self.slide_path.stem)
         return stem.replace("-", " ").replace("_", " ") or self.slide_path.stem
@@ -1209,6 +1266,94 @@ def generate_course_notes(
     )
 
 
+# ── Per-video note generation ─────────────────────────────────────────────────
+
+def generate_per_video_notes(
+    course_name: str,
+    lectures: list[LectureData],
+    out_dir: Path,
+    detail: int = DETAIL_LEVEL,
+    fmt: str = OUTPUT_FORMAT,
+    force: bool = False,
+) -> list[tuple[Path, dict]]:
+    """Generate one note file per lecture/video instead of a single merged file.
+
+    Each video gets its own Markdown file: <course>_L<N>_notes.md
+    Returns a list of (path, scores) tuples for each generated note.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sections_dir = out_dir / "sections"
+    sections_dir.mkdir(exist_ok=True)
+
+    tqdm.write("  Loading lecture data…")
+    for ld in lectures:
+        ld.load(out_dir)
+
+    results: list[tuple[Path, dict]] = []
+
+    for ld in lectures:
+        lec_num = ld.num
+        lec_title = ld.title
+        ext = ".mdx" if fmt == "mdx" else ".md"
+        note_path = out_dir / f"{course_name}_L{lec_num:02d}_notes{ext}"
+
+        tqdm.write(f"\n  ═══ Lecture {lec_num}: {lec_title} ═══")
+
+        n_chunks = max(1, (len(ld.slides) + CHAPTER_SIZE - 1) // CHAPTER_SIZE)
+        bar = tqdm(total=n_chunks, desc=f"L{lec_num}", unit="section",
+                   bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
+
+        has_transcript = bool(ld.compact_by_idx)
+        chunks = [ld.slides[i:i + CHAPTER_SIZE]
+                  for i in range(0, len(ld.slides), CHAPTER_SIZE)]
+
+        parts: list[str] = []
+        for ci, chunk in enumerate(chunks, start=1):
+            content = generate_section(
+                lec_num=lec_num,
+                lec_title=lec_title,
+                course_name=course_name,
+                chunk=chunk,
+                ci=ci,
+                ld=ld,
+                out_dir=out_dir,
+                sections_dir=sections_dir,
+                detail=detail,
+                has_transcript=has_transcript,
+                bar=bar,
+                force=force,
+            )
+            parts.append(content)
+            bar.update(1)
+        bar.close()
+
+        # Build per-video note
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+08:00")
+        front = (f"---\ntitle: {course_name} — Lecture {lec_num}\ndate: {now}\n"
+                 f"description: Lecture notes generated by auto_note\n"
+                 f"categories:\n    - tech\n---\n\n")
+        heading = f"# {course_name} — Lecture {lec_num}: {lec_title}\n\n"
+        full_notes = front + heading + "\n\n".join(parts)
+
+        # Image filter
+        tqdm.write("  Running image filter pass…")
+        full_notes, _, _ = filter_images_pass(full_notes, out_dir, [ld])
+
+        note_path.write_text(full_notes, encoding="utf-8")
+        tqdm.write(f"  Saved → {note_path}  ({len(full_notes):,} chars)")
+
+        scores = self_score(ld.slides, full_notes, ld.compact_slides)
+        _print_score(scores, note_path.name)
+        score_path = note_path.with_suffix(".score.json")
+        with open(score_path, "w") as f:
+            json.dump(scores, f, indent=2)
+
+        results.append((note_path, scores))
+
+    return results
+
+
 # ── Iteration ─────────────────────────────────────────────────────────────────
 
 def generate_with_iteration(
@@ -1271,8 +1416,58 @@ def _find_alignment(slide_path: Path, course_dir: Path) -> Path | None:
     return best if best_sc > 0.05 else None
 
 
+def _discover_screenshare_lectures(course_dir: Path) -> list[LectureData]:
+    """Discover lectures from screen share frame directories.
+
+    Checks the manifest to find screen share (SS) videos, then looks for
+    extracted frames in <course_dir>/frames/<video_stem>/.
+    """
+    frames_dir = course_dir / "frames"
+    if not frames_dir.exists():
+        return []
+
+    lectures: list[LectureData] = []
+    frame_subdirs = sorted([d for d in frames_dir.iterdir() if d.is_dir()])
+    for i, fdir in enumerate(frame_subdirs, start=1):
+        frame_pngs = sorted(fdir.glob("frame_*.png"))
+        if not frame_pngs:
+            continue
+        # Check for alignment
+        align_path = course_dir / "alignment" / f"{fdir.name}.json"
+        align = align_path if align_path.exists() else None
+        # Verify alignment source is screenshare
+        if align:
+            try:
+                with open(align, encoding="utf-8") as f:
+                    data = json.load(f)
+                if data.get("source") != "screenshare":
+                    continue  # This alignment is from traditional slide matching
+            except Exception:
+                pass
+        else:
+            continue  # No alignment yet — need frame_extractor to run first
+
+        lectures.append(LectureData(
+            num=i,
+            slide_path=fdir,   # frame_dir serves as slide_path for compatibility
+            alignment_path=align,
+            file_idx=1,
+            source="screenshare",
+            frame_dir=fdir,
+        ))
+    return lectures
+
+
 def _discover_lectures(course_dir: Path) -> list[LectureData]:
     exts    = {".pdf", ".pptx", ".ppt", ".docx", ".doc"}
+
+    # ── Check for screen share lectures first ────────────────────────────────
+    ss_lectures = _discover_screenshare_lectures(course_dir)
+    if ss_lectures:
+        tqdm.write(f"  Found {len(ss_lectures)} screen share lecture(s) from extracted frames")
+        return ss_lectures
+
+    # ── Traditional slide-based discovery ─────────────────────────────────────
 
     # Common lecture-slide subfolder names, checked in priority order.
     _LECTURE_SUBDIRS = [
@@ -1349,6 +1544,8 @@ def main() -> None:
                         help="Re-generate sections even if they already exist")
     parser.add_argument("--lectures",    metavar="N-N or N,N,N", default="",
                         help="Filter lectures, e.g. '1-5' or '1,2,3'")
+    parser.add_argument("--per-video",  action="store_true",
+                        help="Generate one note file per video/lecture instead of one combined note")
     args = parser.parse_args()
 
     if args.course:
@@ -1370,14 +1567,24 @@ def main() -> None:
 
         print(f"Found {len(lectures)} lectures:")
         for ld in lectures:
+            src = f" [{ld.source}]" if ld.source != "slides" else ""
             a  = "+ alignment" if ld.alignment_path else "(slide-only)"
             fi = f" [part {ld.file_idx}]" if ld.file_idx > 1 else ""
-            print(f"  L{ld.num}{fi}: {ld.slide_path.name}  {a}")
+            print(f"  L{ld.num}{fi}{src}: {ld.slide_path.name}  {a}")
 
         ext_out      = ".mdx" if args.format == "mdx" else ".md"
         out_path     = Path(args.out) if args.out else \
                        course_dir / "notes" / f"{course_name}_notes{ext_out}"
         sections_dir = out_path.parent / "sections"
+
+        if args.per_video:
+            # Per-video mode: one note per lecture/video
+            out_dir = out_path.parent
+            generate_per_video_notes(
+                course_name, lectures, out_dir,
+                detail=args.detail, fmt=args.format, force=args.force,
+            )
+            return
 
         if args.merge_only:
             # Load lectures so titles are available

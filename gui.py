@@ -64,7 +64,7 @@ def _install_scripts() -> None:
     import shutil as _sh
     SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
     for fname in [
-        "downloader.py", "extract_caption.py",
+        "downloader.py", "extract_caption.py", "frame_extractor.py",
         "semantic_alignment.py", "alignment_parser.py", "note_generation.py",
     ]:
         src = PROJECT_DIR / fname
@@ -82,10 +82,11 @@ def _script(name: str) -> Path:
 
 
 SCRIPTS = {
-    "downloader": _script("downloader.py"),
-    "transcribe": _script("extract_caption.py"),
-    "align":      _script("semantic_alignment.py"),
-    "generate":   _script("note_generation.py"),
+    "downloader":      _script("downloader.py"),
+    "transcribe":      _script("extract_caption.py"),
+    "frame_extractor": _script("frame_extractor.py"),
+    "align":           _script("semantic_alignment.py"),
+    "generate":        _script("note_generation.py"),
 }
 
 _DEFAULT_PYTHON = PYTHON   # auto-detected fallback; may be overridden by user config
@@ -968,6 +969,7 @@ def build_pipeline(page: ft.Page, console: OutputConsole) -> ft.Column:
     )
     lec_filter_f = _text_field("Lecture filter", hint="1-5  or  1,3,5  (blank=all)")
     force_sw     = ft.Switch(label="Force regenerate", value=False, active_color=C_PRIMARY)
+    per_video_sw = ft.Switch(label="Per-video notes", value=False, active_color=C_PRIMARY)
 
     def _run(_):
         cid  = int(course_val["v"])
@@ -997,7 +999,12 @@ def build_pipeline(page: ft.Page, console: OutputConsole) -> ft.Column:
         if "transcribe" in steps:
             cmds.append(("Transcribe", [PYTHON, str(SCRIPTS["transcribe"])]))
 
+        # Frame extraction for screen share videos (runs between transcribe and align)
         if "align" in steps:
+            cmds.append(("Extract frames (screen share)",
+                         [PYTHON, str(SCRIPTS["frame_extractor"]),
+                          "--course", str(cid),
+                          "--path", str(_get_output_dir())]))
             cmds.append(("Align", [PYTHON, str(SCRIPTS["align"]),
                                    "--course", str(cid)]))
 
@@ -1010,6 +1017,8 @@ def build_pipeline(page: ft.Page, console: OutputConsole) -> ft.Column:
                 c += ["--lectures", lec_filter_f.value.strip()]
             if force_sw.value:
                 c.append("--force")
+            if per_video_sw.value:
+                c.append("--per-video")
             cmds.append(("Generate notes", c))
 
         def _chain(idx: int = 0) -> None:
@@ -1048,6 +1057,7 @@ def build_pipeline(page: ft.Page, console: OutputConsole) -> ft.Column:
                    expand=True),
                 lec_filter_f,
                 force_sw,
+                per_video_sw,
             ], spacing=8), padding=16),
         ], spacing=12, wrap=True),
         ft.Row(controls=[_run_btn("Run Pipeline", ft.Icons.PLAY_ARROW, _run)]),
@@ -1409,6 +1419,7 @@ def build_settings(page: ft.Page,
     openai_file    = DATA_DIR / "openai_api.txt"
     anthropic_file = DATA_DIR / "anthropic_key.txt"
     gemini_file    = DATA_DIR / "gemini_api.txt"
+    jina_file      = DATA_DIR / "jina_api.txt"
 
     _v = {
         "canvas_url":  _cfg.get("CANVAS_URL", ""),
@@ -1419,6 +1430,7 @@ def build_settings(page: ft.Page,
         "openai":      openai_file.read_text().strip() if openai_file.exists() else "",
         "anthropic":   anthropic_file.read_text().strip() if anthropic_file.exists() else "",
         "gemini":      gemini_file.read_text().strip() if gemini_file.exists() else "",
+        "jina":        jina_file.read_text().strip() if jina_file.exists() else "",
     }
 
     def _mk_tf(key: str, **kwargs) -> ft.TextField:
@@ -1455,6 +1467,10 @@ def build_settings(page: ft.Page,
     tf_gemini = _mk_tf("gemini",
         password=True, can_reveal_password=True,
         hint_text="AIza…  (Google AI Studio key, no default)",
+        expand=True, dense=True, bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12)
+    tf_jina = _mk_tf("jina",
+        password=True, can_reveal_password=True,
+        hint_text="jina_…  (for multimodal alignment, optional)",
         expand=True, dense=True, bgcolor=C_OUTPUT_BG, border_color=C_PRIMARY, text_size=12)
 
     conn_card = _card(ft.Column(controls=[
@@ -1514,6 +1530,7 @@ def build_settings(page: ft.Page,
         _field_row("OpenAI API Key",    tf_openai),
         _field_row("Anthropic API Key", tf_anthropic),
         _field_row("Gemini API Key",    tf_gemini),
+        _field_row("Jina API Key",      tf_jina),
         ft.Row(controls=[
             ft.Text("Project dir", size=11,
                     color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
@@ -1883,6 +1900,7 @@ def build_settings(page: ft.Page,
             (openai_file,    "openai"),
             (anthropic_file, "anthropic"),
             (gemini_file,    "gemini"),
+            (jina_file,      "jina"),
         ]:
             try:
                 val = _v[key].strip()

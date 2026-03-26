@@ -151,10 +151,11 @@ def get_panopto_session_id_and_cookies(launch_url: str) -> tuple[str | None, lis
     return session_id, panopto_cookies
 
 
-def get_stream_url(session_id: str, panopto_cookies: list[dict]) -> str | None:
+def get_stream_url(session_id: str, panopto_cookies: list[dict]) -> tuple[str, str] | None:
     """
     Call Panopto's DeliveryInfo endpoint to get the HLS master.m3u8 URL.
-    Returns the primary (DV / camera) stream URL.
+    Returns (stream_url, stream_tag) on success, None on failure.
+    stream_tag is "SS" for screen share, "DV" for camera, etc.
     """
     sess = requests.Session()
     for ck in panopto_cookies:
@@ -180,12 +181,12 @@ def get_stream_url(session_id: str, panopto_cookies: list[dict]) -> str | None:
     info = r.json()
     streams = info.get("Delivery", {}).get("Streams", [])
 
-    # Prefer "DV" (camera) tag, fall back to first stream
-    for preferred_tag in ("DV", "OBJECT", None):
+    # Prefer "SS" (screen share / slides) tag, fall back to camera then first stream
+    for preferred_tag in ("SS", "DV", "OBJECT", None):
         for s in streams:
             url = s.get("StreamUrl", "")
             if url and (preferred_tag is None or s.get("Tag") == preferred_tag):
-                return url
+                return url, s.get("Tag", "unknown")
     return None
 
 
@@ -237,12 +238,13 @@ def download_video(video: dict, manifest: dict) -> bool:
     print(f"  Panopto session: {session_id}")
 
     # Step C: get HLS stream URL
-    stream_url = get_stream_url(session_id, panopto_cookies)
-    if not stream_url:
+    result = get_stream_url(session_id, panopto_cookies)
+    if not result:
         print(f"  [error] Could not get stream URL")
         manifest[manifest_key] = {"status": "error", "title": title}
         return False
-    print(f"  Stream: {stream_url[:80]}...")
+    stream_url, stream_tag = result
+    print(f"  Stream ({stream_tag}): {stream_url[:80]}...")
 
     # Step D: download with PanoptoDownloader (ffmpeg HLS)
     print(f"  Downloading -> {out_path}")
@@ -259,6 +261,7 @@ def download_video(video: dict, manifest: dict) -> bool:
             "path": str(out_path),
             "title": title,
             "session_id": session_id,
+            "stream_tag": stream_tag,
         }
         return True
     except Exception as e:

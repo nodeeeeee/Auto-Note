@@ -70,6 +70,12 @@ EMBED_MODEL   = "all-mpnet-base-v2"   # highest-quality general sentence model
 CONTEXT_SEC   = 30.0                  # seconds of transcript to pool per query
 BATCH_SIZE    = 64                    # embedding batch size
 
+# Jina Embeddings v4 multimodal model — used when aligning transcript to slide
+# images directly (no slide text extraction needed).  Requires the jina API key
+# or the local model jinaai/jina-embeddings-v4 via sentence-transformers.
+JINA_EMBED_MODEL = "jinaai/jina-embeddings-v4"
+JINA_API_URL     = "https://api.jina.ai/v1/embeddings"
+
 # Viterbi transition log-probabilities
 STAY_LOGP     =  0.0    # free to stay on the same slide
 FWD_LOGP_PER  = -0.02   # cost per slide advanced forward (nearly free)
@@ -424,6 +430,113 @@ def build_faiss_index(embeddings: np.ndarray) -> faiss.IndexFlatIP:
     index = faiss.IndexFlatIP(dim)
     index.add(embeddings)
     return index
+
+
+# ── Jina Embeddings v4 multimodal ────────────────────────────────────────────
+
+def _get_jina_key() -> str:
+    import os
+    key = os.environ.get("JINA_API_KEY", "")
+    if not key:
+        key_file = DATA_DIR / "jina_api.txt"
+        if key_file.exists():
+            key = key_file.read_text().strip()
+    return key
+
+
+def embed_images_jina(image_paths: list[Path], desc: str = "  embedding images") -> np.ndarray | None:
+    """Embed slide images using Jina Embeddings v4 API.
+
+    Returns L2-normalised float32 embeddings, shape (N, D), or None on failure.
+    """
+    import base64
+    import requests as _req
+
+    key = _get_jina_key()
+    if not key:
+        print("  [jina] No Jina API key — cannot embed images")
+        return None
+
+    print(f"{desc} ({len(image_paths)} images via Jina API)...", flush=True)
+
+    # Encode images as base64
+    inputs = []
+    for p in image_paths:
+        if not p.exists():
+            continue
+        b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+        inputs.append({"image": f"data:image/png;base64,{b64}"})
+
+    if not inputs:
+        return None
+
+    # Call Jina API in batches
+    all_embeddings = []
+    batch_size = 16
+    for i in range(0, len(inputs), batch_size):
+        batch = inputs[i:i + batch_size]
+        try:
+            resp = _req.post(
+                JINA_API_URL,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"model": "jina-embeddings-v4", "input": batch,
+                      "dimensions": 768, "normalized": True,
+                      "embedding_type": "float", "task": "retrieval.passage"},
+                timeout=120,
+            )
+            if resp.status_code != 200:
+                print(f"  [jina] API error {resp.status_code}: {resp.text[:200]}")
+                return None
+            data = resp.json()
+            for item in data.get("data", []):
+                all_embeddings.append(item["embedding"])
+        except Exception as e:
+            print(f"  [jina] Request failed: {e}")
+            return None
+
+    print(f"{desc} done.", flush=True)
+    return np.array(all_embeddings, dtype=np.float32)
+
+
+def embed_texts_jina(texts: list[str], desc: str = "  embedding texts") -> np.ndarray | None:
+    """Embed texts using Jina Embeddings v4 API.
+
+    Returns L2-normalised float32 embeddings, shape (N, D), or None on failure.
+    """
+    import requests as _req
+
+    key = _get_jina_key()
+    if not key:
+        print("  [jina] No Jina API key — cannot embed texts")
+        return None
+
+    print(f"{desc} ({len(texts)} texts via Jina API)...", flush=True)
+
+    all_embeddings = []
+    batch_size = 64
+    for i in range(0, len(texts), batch_size):
+        batch = [{"text": t} for t in texts[i:i + batch_size]]
+        try:
+            resp = _req.post(
+                JINA_API_URL,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"model": "jina-embeddings-v4", "input": batch,
+                      "dimensions": 768, "normalized": True,
+                      "embedding_type": "float", "task": "retrieval.query"},
+                timeout=120,
+            )
+            if resp.status_code != 200:
+                print(f"  [jina] API error {resp.status_code}: {resp.text[:200]}")
+                return None
+            data = resp.json()
+            for item in data.get("data", []):
+                all_embeddings.append(item["embedding"])
+        except Exception as e:
+            print(f"  [jina] Request failed: {e}")
+            return None
+
+    print(f"{desc} done.", flush=True)
+    return np.array(all_embeddings, dtype=np.float32)
 
 
 # ── Transcript windowing ──────────────────────────────────────────────────────
@@ -959,6 +1072,161 @@ def align_multi_slides(
     return out_files
 
 
+# ── Jina v4 multimodal alignment (transcript text ↔ slide images) ────────────
+
+def align_multimodal(
+    caption_path: Path,
+    slide_path: Path,
+    out_dir: Path,
+) -> Path | None:
+    """Align transcript to slide images using Jina Embeddings v4.
+
+    Instead of embedding slide text, this renders each slide page to an image
+    and embeds it with Jina v4.  Transcript segments are embedded as text.
+    Both live in the same multimodal vector space for cross-modal matching.
+
+    Temporal heuristic rewards:
+      - Consecutive segments get a bonus for staying on the same slide
+      - Forward progression is preferred over backward jumps
+      - Temporal position prior guides the Viterbi decoder
+    """
+    print(f"\n{'='*70}")
+    print(f"Multimodal alignment (Jina v4)")
+    print(f"Caption : {caption_path.name}")
+    print(f"Slides  : {slide_path.name}")
+    print(f"{'='*70}")
+
+    # ── Load caption ─────────────────────────────────────────────────────────
+    with open(caption_path, encoding="utf-8") as f:
+        caption = json.load(f)
+    segments: list[dict] = caption["segments"]
+    if not segments:
+        print("  [skip] Caption has no segments.")
+        return None
+    print(f"  Transcript: {len(segments)} segments, {caption['duration']:.0f}s")
+
+    # ── Render slide images ──────────────────────────────────────────────────
+    import tempfile
+    tmp_img_dir = Path(tempfile.mkdtemp(prefix="jina_slides_"))
+    print(f"  Rendering slides to images...")
+
+    slide_images: list[Path] = []
+    ext = slide_path.suffix.lower()
+    if ext == ".pdf":
+        import fitz
+        from PIL import Image as PILImage
+        doc = fitz.open(str(slide_path))
+        for i in range(len(doc)):
+            png = tmp_img_dir / f"slide_{i+1:03d}.png"
+            px = doc[i].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+            pil = PILImage.frombytes("RGB", [px.width, px.height], px.samples)
+            pil.save(str(png))
+            slide_images.append(png)
+            del px, pil
+        doc.close()
+    else:
+        # For non-PDF, fall back to text-based alignment
+        print("  [warn] Jina multimodal requires PDF slides; falling back to text alignment")
+        return None
+
+    N = len(slide_images)
+    print(f"  Rendered {N} slide images")
+
+    # ── Embed slide images with Jina v4 ──────────────────────────────────────
+    slide_embs = embed_images_jina(slide_images, desc="  slides (Jina v4)")
+    if slide_embs is None:
+        print("  [error] Failed to embed slide images; falling back to text alignment")
+        import shutil
+        shutil.rmtree(tmp_img_dir, ignore_errors=True)
+        return None
+
+    # ── Embed transcript segments as text with Jina v4 ───────────────────────
+    window_texts = build_window_texts(segments, CONTEXT_SEC)
+    seg_embs = embed_texts_jina(window_texts, desc="  transcript (Jina v4)")
+    if seg_embs is None:
+        print("  [error] Failed to embed transcript; falling back to text alignment")
+        import shutil
+        shutil.rmtree(tmp_img_dir, ignore_errors=True)
+        return None
+
+    # ── Build similarity matrix ──────────────────────────────────────────────
+    T = len(segments)
+    # Cosine similarity (both are L2-normalised)
+    log_ll = (seg_embs @ slide_embs.T).astype(np.float64)  # (T, N)
+    log_ll_raw = log_ll.copy()
+
+    # ── Temporal position prior ──────────────────────────────────────────────
+    total_duration = caption["duration"] or 1.0
+    slide_idx = np.arange(N, dtype=np.float64)
+    for t, seg in enumerate(segments):
+        t_mid = (seg["start"] + seg["end"]) / 2.0
+        expected_s = (t_mid / total_duration) * (N - 1)
+        prior = -0.5 * ((slide_idx - expected_s) / PRIOR_SIGMA) ** 2
+        log_ll[t] += prior
+
+    # ── Off-slide detection ──────────────────────────────────────────────────
+    raw_max_sim = log_ll_raw.max(axis=1)
+    off_slide_mask = (raw_max_sim < OFF_SLIDE_THRESHOLD).tolist()
+    n_off = sum(off_slide_mask)
+    if n_off:
+        print(f"  Off-slide segments: {n_off}/{T} (raw cosine < {OFF_SLIDE_THRESHOLD})")
+
+    # ── Viterbi with enhanced temporal heuristics ────────────────────────────
+    print("  Running Viterbi smoothing (enhanced temporal heuristics)...")
+    slide_path_idx = viterbi_smooth_fast(log_ll)
+
+    # ── Load slide text for labels ───────────────────────────────────────────
+    slides = load_slides(slide_path)
+
+    # ── Build output ─────────────────────────────────────────────────────────
+    aligned_segments = []
+    for i, seg in enumerate(segments):
+        si = slide_path_idx[i]
+        off = off_slide_mask[i]
+        raw_sim = round(float(log_ll_raw[i, si]), 4)
+        aligned_segments.append({
+            "id": seg["id"],
+            "start": seg["start"],
+            "end": seg["end"],
+            "text": seg["text"],
+            "slide": None if off else si + 1,
+            "slide_label": None if off else slides[si].label if si < len(slides) else f"Slide {si+1}",
+            "similarity": raw_sim,
+            "off_slide": off,
+        })
+
+    timeline = build_timeline(segments, slide_path_idx, slides, off_slide_mask)
+
+    result = {
+        "lecture": caption_path.stem,
+        "slide_file": slide_path.name,
+        "total_slides": N,
+        "total_segments": T,
+        "off_slide_count": n_off,
+        "duration": caption["duration"],
+        "language": caption.get("language", ""),
+        "embed_model": "jina-embeddings-v4",
+        "context_sec": CONTEXT_SEC,
+        "segments": aligned_segments,
+        "timeline": timeline,
+    }
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"{caption_path.stem}.json"
+    with open(out_file, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    covered = len({s["slide"] for s in aligned_segments if s["slide"] is not None})
+    print(f"  Covered {covered}/{N} slides across {len(timeline)} intervals")
+    print(f"  Saved → {out_file}")
+
+    # Cleanup temporary images
+    import shutil
+    shutil.rmtree(tmp_img_dir, ignore_errors=True)
+
+    return out_file
+
+
 # ── Auto-discovery ────────────────────────────────────────────────────────────
 
 def _candidate_slides(course_dir: Path) -> list[Path]:
@@ -1112,7 +1380,7 @@ def _content_match_slide_group(
     return [best]
 
 
-def process_course(course_id: int | str) -> None:
+def process_course(course_id: int | str, use_jina: bool = False) -> None:
     course_dir  = COURSE_DATA_DIR / str(course_id)
     captions_dir = course_dir / "captions"
     print(f"Course dir : {course_dir}", flush=True)
@@ -1133,6 +1401,15 @@ def process_course(course_id: int | str) -> None:
 
     print(f"Found {len(captions)} caption(s), {len(all_slides)} slide file(s).", flush=True)
 
+    # Check Jina API availability if requested
+    if use_jina:
+        jina_key = _get_jina_key()
+        if jina_key:
+            print("  [jina] Jina API key found — using multimodal alignment")
+        else:
+            print("  [jina] No Jina API key — falling back to text-based alignment")
+            use_jina = False
+
     # Group slide files by lecture number
     slides_by_num: dict[int, list[Path]] = defaultdict(list)
     for sp in all_slides:
@@ -1140,7 +1417,7 @@ def process_course(course_id: int | str) -> None:
         if num is not None:
             slides_by_num[num].append(sp)
 
-    embedder = get_embedder()
+    embedder = None if use_jina else get_embedder()
 
     for cap in captions:
         # Skip captions flagged as low-quality (wrong/empty recordings)
@@ -1153,8 +1430,14 @@ def process_course(course_id: int | str) -> None:
         except Exception:
             pass   # can't read → proceed and let align() handle it
 
+        # Find matching slides
+        if embedder is None and not use_jina:
+            embedder = get_embedder()
+
         slide_group = _find_best_slide_group(cap, slides_by_num, all_slides)
         if not slide_group:
+            if embedder is None:
+                embedder = get_embedder()
             slide_group = _content_match_slide_group(
                 cap, slides_by_num, all_slides, embedder
             )
@@ -1173,6 +1456,18 @@ def process_course(course_id: int | str) -> None:
                 print(f"  [skip] Already aligned: {[sp.name for sp in slide_group]}")
                 continue
 
+        # Use Jina multimodal for single PDF slides if available
+        if use_jina and len(slide_group) == 1 and slide_group[0].suffix.lower() == ".pdf":
+            result = align_multimodal(cap, slide_group[0], out_dir)
+            if result:
+                continue
+            # Fall back to text-based on failure
+            print("  [jina] Falling back to text-based alignment")
+            if embedder is None:
+                embedder = get_embedder()
+
+        if embedder is None:
+            embedder = get_embedder()
         align_multi_slides(cap, slide_group, out_dir, embedder=embedder)
 
 
@@ -1189,10 +1484,12 @@ def main() -> None:
                         help="Auto-process a course folder")
     parser.add_argument("--out",     metavar="DIR",
                         help="Output directory (default: [course]/alignment)")
+    parser.add_argument("--jina",    action="store_true",
+                        help="Use Jina Embeddings v4 for multimodal (image+text) alignment")
     args = parser.parse_args()
 
     if args.course:
-        process_course(args.course)
+        process_course(args.course, use_jina=args.jina)
         return
 
     if not args.caption or not args.slides:
