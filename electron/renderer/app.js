@@ -12,6 +12,16 @@ const State = {
   pythonPath: null,
   outputDir:  null,
   dataDir:    null,
+  // Persisted Pipeline page form values (survive navigation)
+  pipeline: {
+    courseId:   '',
+    detail:     '7',
+    courseName: '',
+    lecFilter:  '',
+    stealth:    false,
+    force:      false,
+    steps: { mat: true, vid: true, trans: true, align: true, gen: true },
+  },
 };
 
 // ── Snackbar ──────────────────────────────────────────────────────────────────
@@ -31,11 +41,12 @@ function snack(msg, ok = true) {
 
 // ── Terminal ──────────────────────────────────────────────────────────────────
 const Term = (() => {
-  const MAX_LINES    = 500;
+  const MAX_LINES    = 2000;
   const ANSI_RE      = /\x1b\[[0-9;]*[mABCDEFGHJKSTfr]|\x1b\][^\x07]*\x07|\x1b[()][AB012]/g;
-  let lines          = [];   // array of {text, cls}
-  let currentText    = '';   // current line buffer
+  let lines          = [];   // array of {text, cls} — committed (newline-terminated)
+  let currentText    = '';   // current partial line buffer
   let scheduledRender = false;
+  let renderedCount  = 0;    // lines[0..renderedCount-1] are already in the DOM
 
   function classify(text) {
     const t = text.toLowerCase().trimStart();
@@ -57,21 +68,43 @@ const Term = (() => {
   }
 
   function render() {
-    const el  = document.getElementById('terminal-output');
+    const el = document.getElementById('terminal-output');
     if (!el) return;
     const atBottom = el.scrollHeight - el.clientHeight - el.scrollTop < 30;
-    const frag = document.createDocumentFragment();
-    // Current partial line
-    const allLines = [...lines, { text: currentText, cls: '' }];
-    // Only re-render last N if performance is a concern; here we rebuild all
-    for (const { text, cls } of allLines) {
-      const div = document.createElement('div');
-      div.className = 'term-line' + (cls ? ' ' + cls : '');
-      div.textContent = text;
-      frag.appendChild(div);
+
+    // If the DOM was wiped (after clear()), reset tracked count
+    if (el.children.length === 0) renderedCount = 0;
+
+    // Append only newly committed lines (don't touch existing DOM nodes)
+    if (renderedCount < lines.length) {
+      const frag = document.createDocumentFragment();
+      for (let i = renderedCount; i < lines.length; i++) {
+        const { text, cls } = lines[i];
+        const div = document.createElement('div');
+        div.className = 'term-line' + (cls ? ' ' + cls : '');
+        div.textContent = text;
+        frag.appendChild(div);
+      }
+      // Insert before the partial-line placeholder if it exists
+      const partDiv = el.lastChild;
+      if (partDiv && partDiv._isPartial) {
+        el.insertBefore(frag, partDiv);
+      } else {
+        el.appendChild(frag);
+      }
+      renderedCount = lines.length;
     }
-    el.innerHTML = '';
-    el.appendChild(frag);
+
+    // Update the partial-line placeholder in-place (no flicker)
+    let partDiv = el.lastChild;
+    if (!partDiv || !partDiv._isPartial) {
+      partDiv = document.createElement('div');
+      partDiv.className = 'term-line';
+      partDiv._isPartial = true;
+      el.appendChild(partDiv);
+    }
+    partDiv.textContent = currentText;
+
     if (atBottom) el.scrollTop = el.scrollHeight;
   }
 
@@ -84,7 +117,10 @@ const Term = (() => {
         const t = currentText;
         if (!t.startsWith('<frozen importlib')) {
           lines.push({ text: t, cls: classify(t) });
-          if (lines.length > MAX_LINES) lines.shift();
+          if (lines.length > MAX_LINES) {
+            lines.shift();
+            renderedCount = Math.max(0, renderedCount - 1);
+          }
         }
         currentText = '';
       } else {
@@ -97,7 +133,10 @@ const Term = (() => {
   function write(text, cls = '') {
     for (const line of text.split('\n')) {
       lines.push({ text: line, cls });
-      if (lines.length > MAX_LINES) lines.shift();
+      if (lines.length > MAX_LINES) {
+        lines.shift();
+        renderedCount = Math.max(0, renderedCount - 1);
+      }
     }
     scheduleRender();
   }
@@ -105,7 +144,9 @@ const Term = (() => {
   function clear() {
     lines = [];
     currentText = '';
-    render();
+    renderedCount = 0;
+    const el = document.getElementById('terminal-output');
+    if (el) el.innerHTML = '';
     setStatus('');
   }
 
@@ -153,13 +194,14 @@ function statusChip(done, total) {
   return chip(`◐ ${done}/${total}`, 'chip-warn');
 }
 
-function courseOptions(includeAll = false) {
+function courseOptions(includeAll = false, selectedId = '') {
   if (!State.courses.length) {
     return `<option value="">— no courses, add Canvas token in Settings —</option>`;
   }
-  let html = includeAll ? `<option value="0">All courses</option>` : '';
+  const sel = v => String(v) === String(selectedId) ? ' selected' : '';
+  let html = includeAll ? `<option value="0"${sel('0')}>All courses</option>` : '';
   for (const c of State.courses) {
-    html += `<option value="${c.id}">${esc(c.name)} (${c.id})</option>`;
+    html += `<option value="${c.id}"${sel(c.id)}>${esc(c.name)} (${c.id})</option>`;
   }
   return html;
 }
@@ -252,7 +294,13 @@ function runChain(steps) {
   window.api.offProcessEvents();
 
   function runNext() {
-    if (idx >= steps.length) return;
+    if (idx >= steps.length) {
+      State.running = false;
+      Term.showStop(false);
+      Term.write('\n✓  All steps completed successfully.', 'ok');
+      Term.setStatus('✓ done', 'var(--c-success)');
+      return;
+    }
     const [label, cmd] = steps[idx++];
     const stepLabel = `Step ${idx}/${steps.length}: ${label}`;
     Term.write(`\n${'─'.repeat(50)}\n▶  ${stepLabel}\n`, 'cmd');
@@ -418,7 +466,8 @@ async function loadDashboardStats() {
 
 // ── Page: Full Pipeline ────────────────────────────────────────────────────────
 function buildPipeline() {
-  const defaultCid = firstCourseId();
+  const ps  = State.pipeline;
+  const cid = ps.courseId || firstCourseId();
   return `
     ${sectionTitle('Full Pipeline Wizard', '')}
     ${mkCard(`
@@ -426,7 +475,7 @@ function buildPipeline() {
         <div class="col expand">
           <span class="label">Course</span>
           <select id="pp-course" class="select-ctrl">
-            ${courseOptions()}
+            ${courseOptions(false, cid)}
           </select>
         </div>
       </div>
@@ -434,25 +483,25 @@ function buildPipeline() {
     <div class="row" style="align-items:flex-start">
       ${mkCard(`
         <span class="label">Steps to execute</span>
-        ${mkCheckbox('pp-step-mat',   'Download materials')}
-        ${mkCheckbox('pp-step-vid',   'Download videos')}
-        ${mkCheckbox('pp-step-trans', 'Transcribe videos')}
-        ${mkCheckbox('pp-step-align', 'Align transcripts')}
-        ${mkCheckbox('pp-step-gen',   'Generate study notes')}
+        ${mkCheckbox('pp-step-mat',   'Download materials',   ps.steps.mat)}
+        ${mkCheckbox('pp-step-vid',   'Download videos',      ps.steps.vid)}
+        ${mkCheckbox('pp-step-trans', 'Transcribe videos',    ps.steps.trans)}
+        ${mkCheckbox('pp-step-align', 'Align transcripts',    ps.steps.align)}
+        ${mkCheckbox('pp-step-gen',   'Generate study notes', ps.steps.gen)}
       `, 'col expand')}
       ${mkCard(`
         <span class="label">Download</span>
-        ${mkSwitch('pp-stealth', 'Stealth mode for downloads')}
+        ${mkSwitch('pp-stealth', 'Stealth mode for downloads', ps.stealth)}
         <hr class="divider">
         <span class="label">Note generation</span>
         <div class="field">
           <label class="label">Course name for notes</label>
-          <input id="pp-course-name" class="input-text" type="text" value="">
+          <input id="pp-course-name" class="input-text" type="text" value="${esc(ps.courseName)}">
         </div>
         <div class="row center" style="gap:8px;margin-top:8px">
-          <span class="slider-value" id="pp-detail-val">7</span>
+          <span class="slider-value" id="pp-detail-val">${esc(ps.detail)}</span>
           <div class="col expand">
-            <input id="pp-detail" type="range" min="0" max="10" value="7" step="1" class="slider">
+            <input id="pp-detail" type="range" min="0" max="10" value="${esc(ps.detail)}" step="1" class="slider">
             <div style="font-size:10px;color:var(--c-white-35);margin-top:2px">
               0-2 Outline · 3-5 Bullets · 6-8 Paragraphs · 9-10 Exhaustive
             </div>
@@ -460,9 +509,9 @@ function buildPipeline() {
         </div>
         <div class="field" style="margin-top:8px">
           <label class="label">Lecture filter</label>
-          <input id="pp-lec-filter" class="input-text" type="text" placeholder="1-5  or  1,3,5  (blank=all)">
+          <input id="pp-lec-filter" class="input-text" type="text" value="${esc(ps.lecFilter)}" placeholder="1-5  or  1,3,5  (blank=all)">
         </div>
-        ${mkSwitch('pp-force', 'Force regenerate')}
+        ${mkSwitch('pp-force', 'Force regenerate', ps.force)}
       `, 'col expand')}
     </div>
     <div class="row">
@@ -1127,7 +1176,48 @@ async function attachPageHandlers() {
   if (pg === 1) {
     const detSlider = document.getElementById('pp-detail');
     const detLabel  = document.getElementById('pp-detail-val');
-    detSlider?.addEventListener('input', () => { detLabel.textContent = detSlider.value; });
+    detSlider?.addEventListener('input', () => {
+      detLabel.textContent = detSlider.value;
+      State.pipeline.detail = detSlider.value;
+    });
+
+    // Persist all form values so they survive navigation
+    document.getElementById('pp-course')?.addEventListener('change', e => {
+      State.pipeline.courseId = e.target.value;
+      const nameEl = document.getElementById('pp-course-name');
+      if (nameEl && !nameEl.value.trim()) {
+        nameEl.value = courseNameFromId(e.target.value);
+        State.pipeline.courseName = nameEl.value;
+      }
+    });
+    document.getElementById('pp-course-name')?.addEventListener('input', e => {
+      State.pipeline.courseName = e.target.value;
+    });
+    document.getElementById('pp-lec-filter')?.addEventListener('input', e => {
+      State.pipeline.lecFilter = e.target.value;
+    });
+    document.getElementById('pp-stealth')?.addEventListener('change', e => {
+      State.pipeline.stealth = e.target.checked;
+    });
+    document.getElementById('pp-force')?.addEventListener('change', e => {
+      State.pipeline.force = e.target.checked;
+    });
+    for (const [k, id] of [
+      ['mat','pp-step-mat'],['vid','pp-step-vid'],['trans','pp-step-trans'],
+      ['align','pp-step-align'],['gen','pp-step-gen'],
+    ]) {
+      document.getElementById(id)?.addEventListener('change', e => {
+        State.pipeline.steps[k] = e.target.checked;
+      });
+    }
+
+    // Auto-fill course name if blank on first render
+    const ppCourseEl = document.getElementById('pp-course');
+    const ppNameEl   = document.getElementById('pp-course-name');
+    if (ppCourseEl && ppNameEl && !ppNameEl.value.trim() && ppCourseEl.value) {
+      ppNameEl.value = courseNameFromId(ppCourseEl.value);
+      State.pipeline.courseName = ppNameEl.value;
+    }
 
     document.getElementById('pp-run-btn')?.addEventListener('click', async () => {
       const cid     = document.getElementById('pp-course')?.value;
