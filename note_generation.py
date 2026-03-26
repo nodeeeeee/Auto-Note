@@ -101,11 +101,12 @@ system="""\
      > 内容
 7. 有趣类比或助记技巧用斜体。
 8. 图片插入规则（严格遵守）：
-   - 每隔 2–3 个概念段落插入一张与内容直接相关的幻灯片图片。
-   - 图片紧跟其所描述概念的最后一句之后，不得孤立出现在段落开头或结尾处。
-   - 格式：`![Slide N](images/LXX/slide_NNN.png) *(用一句话描述该图/图表在此处的含义)*`
-     （LXX 由调用方提供，禁止自行修改；括号注释必须用星号包裹，格式严格如上）。
-   - 纯文字定义幻灯片（无图表/代码/公式）可跳过。
+   - **仅插入含视觉元素的图片**：图表、流程图、架构图、代码截图、数学推导、数据可视化等。
+   - **禁止插入纯文字图片**：纯文字要点、定义、标题幻灯片——笔记本身已用文字表达更好。
+   - 每隔 2–3 个概念段落插入一张图片，紧跟其说明的概念之后。
+   - 幻灯片格式：`![Slide N](images/LXX/slide_NNN.png) *(一句话描述)*`
+   - 屏幕录制帧格式：`![Frame N](images/LXX/frame_NNN.png) *(一句话描述)*`
+     （LXX 由调用方提供，禁止自行修改）。
 9. 绝对禁止捏造原始材料中不存在的技术细节。
 """,
 chunk="""\
@@ -125,9 +126,9 @@ chunk="""\
 要求：
 - 本片段对应笔记的二级标题为 `### {lec_num}.{chunk_idx} {chunk_title}`（**不要输出此行**，由调用方添加）
 - 详细度：{detail}/10。{detail_instruction}
-- 图片插入：每隔 2–3 个段落插入一张相关幻灯片图片，紧跟该概念说明之后。
+- 图片插入：**仅插入含图表/代码/公式等视觉元素的图片**，跳过纯文字截图。
   路径必须完全照抄上方「可用图片」列表中给出的路径（含 images/L** 子目录），禁止自造路径。
-  每张图片后加一句斜体括号说明，描述该图在此处的含义：`![Slide N](path) *(说明)*`
+  每张图片后加一句斜体括号说明：`![Slide N](path) *(说明)*` 或 `![Frame N](path) *(说明)*`
 - 代码示例写完整可编译片段（含必要 include/imports），用正确的语言标签（```c, ```cpp, ```python）。
 - 只写本片段内容，不要引入其他讲座的内容
 """,
@@ -146,9 +147,9 @@ slide_only="""\
 要求：
 - 本片段对应笔记的二级标题为 `### {lec_num}.{chunk_idx} {chunk_title}`（**不要输出此行**）
 - 详细度：{detail}/10。{detail_instruction}
-- 图片插入：每隔 2–3 个段落插入一张相关幻灯片图片，紧跟该概念说明之后。
+- 图片插入：**仅插入含图表/代码/公式等视觉元素的图片**，跳过纯文字截图。
   路径必须完全照抄上方「可用图片」列表中给出的路径（含 images/L** 子目录），禁止自造路径。
-  每张图片后加一句斜体括号说明，描述该图在此处的含义：`![Slide N](path) *(说明)*`
+  每张图片后加一句斜体括号说明：`![Slide N](path) *(说明)*` 或 `![Frame N](path) *(说明)*`
 - 代码示例写完整可编译片段，用正确的语言标签（```c, ```cpp, ```python）。
 """,
 verify="""\
@@ -202,11 +203,12 @@ Writing guidelines:
      > content
 7. Use italics for interesting analogies or memory aids.
 8. Image insertion rules (strictly follow):
-   - Insert one slide image every 2–3 concept paragraphs, directly relevant to the surrounding content.
-   - Place the image immediately after the last sentence of the concept it illustrates — never isolated at the start or end of a section.
-   - Format: `![Slide N](images/LXX/slide_NNN.png) *(one-sentence description of what this diagram/figure shows in context)*`
+   - **Only include images that contain visual elements**: diagrams, flowcharts, graphs, charts, plots, architecture drawings, code screenshots, mathematical derivations with spatial layout, annotated figures, tables with meaningful structure, or any non-trivial visual illustration.
+   - **Never include images that are purely text**: bullet-point slides, definition slides, title slides, or any frame/slide whose content can be fully expressed in written text. The notes themselves convey text better than a screenshot of text.
+   - Insert one image every 2–3 concept paragraphs, immediately after the concept it illustrates.
+   - Format for slide images: `![Slide N](images/LXX/slide_NNN.png) *(one-sentence description)*`
+   - Format for screen-capture frames: `![Frame N](images/LXX/frame_NNN.png) *(one-sentence description)*`
      (LXX is provided by the caller — do not modify it; the caption must be in parentheses wrapped in asterisks exactly as shown).
-   - Skip purely text-definition slides (no diagrams/code/formulas).
 9. Never fabricate technical details not present in the source material.
 """,
 chunk="""\
@@ -226,7 +228,7 @@ Write study notes for the following course segment ({course_name} Lecture {lec_n
 Requirements:
 - The section heading for this segment is `### {lec_num}.{chunk_idx} {chunk_title}` (**do not output this line** — it is added by the caller).
 - Detail level: {detail}/10. {detail_instruction}
-- Images: insert one related slide image every 2–3 paragraphs, immediately after the concept it illustrates. Copy the exact path from the "Available images" list above (including the images/L** subdirectory). Do not invent paths. After each image, add a one-sentence italic caption in parentheses describing what the diagram/figure shows in context: `![Slide N](path) *(caption)*`
+- Images: **only include images that contain diagrams, charts, graphs, code screenshots, architecture drawings, or other visual elements that cannot be expressed as text.** Skip images of pure text, bullet points, or definitions — the notes cover that better in writing. Copy the exact path from the "Available images" list (including the images/L** subdirectory). Do not invent paths. After each image, add a one-sentence italic caption: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
 - Code examples must be complete and compilable (with necessary includes/imports), using the correct language tag (```c, ```cpp, ```python).
 - Only cover the content in this segment; do not introduce material from other lectures.
 """,
@@ -245,7 +247,7 @@ Write study notes for {course_name} Lecture {lec_num}: {lec_title} based on the 
 Requirements:
 - The section heading is `### {lec_num}.{chunk_idx} {chunk_title}` (**do not output this line**).
 - Detail level: {detail}/10. {detail_instruction}
-- Images: insert one related slide image every 2–3 paragraphs, immediately after the concept it illustrates. Copy the exact path from the "Available images" list (including the images/L** subdirectory). Do not invent paths. After each image, add a one-sentence italic caption in parentheses describing what the diagram/figure shows in context: `![Slide N](path) *(caption)*`
+- Images: **only include images that contain diagrams, charts, graphs, code screenshots, or visual elements.** Skip images of pure text or bullet points. Copy the exact path from the "Available images" list (including the images/L** subdirectory). Do not invent paths. After each image, add a one-sentence italic caption: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
 - Code examples must be complete and compilable, using the correct language tag (```c, ```cpp, ```python).
 """,
 verify="""\
@@ -325,10 +327,10 @@ def _desc_has_visual(desc: str) -> bool:
 
 
 def _img_ref_pattern() -> re.Pattern:
-    # Matches both images/L04/slide_001.png and images/L04_F02/slide_001.png,
+    # Matches slide_001.png, frame_001.png, in images/L04/ or images/L04_F02/,
     # with an optional trailing italic caption: *(description)*
     return re.compile(
-        r"!\[Slide \d+\]\((images/L\d{2}(?:_F\d{2})?/slide_\d{3}\.png)\)"
+        r"!\[(?:Slide|Frame) \d+\]\((images/L\d{2}(?:_F\d{2})?/(?:slide|frame)_\d{3}\.png)\)"
         r"(?:\s*\*\([^)]*\)\*)?"
     )
 
@@ -436,8 +438,10 @@ def filter_images_pass(
     for ld in lectures:
         prefix = (f"L{ld.num:02d}" if ld.file_idx == 1
                   else f"L{ld.num:02d}_F{ld.file_idx:02d}")
+        # Use frame_NNN for screenshare, slide_NNN for traditional
+        img_prefix = "frame" if ld.source == "screenshare" else "slide"
         for s in ld.slides:
-            key = f"images/{prefix}/slide_{s.index+1:03d}.png"
+            key = f"images/{prefix}/{img_prefix}_{s.index+1:03d}.png"
             slide_ld_lookup[key] = (s, ld)
 
     # Collect unique paths and decide keep/remove
@@ -759,20 +763,24 @@ def _build_chunk_prompt(
             outline_lines.append(f"  Slide {s.index+1}: 「{s.label}」  {snippet}")
     slide_outline = "\n".join(outline_lines)
 
-    # Image hints — for screen share, ALL frames are included as images
+    # Image hints — only include images with visual content (diagrams, code,
+    # formulas, charts).  Pure-text slides/frames add no value as images since
+    # the text is already in the transcript or slide outline.
     img_hints_lines = []
     for s in slides:
         if s.index not in img_map:
             continue
         rel = img_map[s.index].relative_to(out_dir)
         if source == "screenshare":
-            # Every frame is relevant for screen share
-            img_hints_lines.append(f"  Frame {s.index+1}: `{rel}` — screen capture")
+            # For screen share frames: include ALL frames since we can't
+            # easily tell which have diagrams without vision API.  The LLM
+            # is instructed to only reference frames with visual content.
+            img_hints_lines.append(f"  Frame {s.index+1}: `{rel}`")
         else:
             cache_key = f"page_{s.index}"
             desc = img_cache.get(cache_key, "")
             if desc or s.word_count < 30 or s.has_code:
-                note = desc[:80] if desc else ("有代码" if s.has_code else "有图表")
+                note = desc[:80] if desc else ("has code" if s.has_code else "has diagram")
                 img_hints_lines.append(f"  Slide {s.index+1}: `{rel}` — {note}")
     image_hints = "\n".join(img_hints_lines) or "  (no images for this segment)"
 
@@ -1075,8 +1083,8 @@ class LectureData:
     def render_chunk_images(self, slide_indices: list[int]) -> dict[int, Path]:
         """Render only the slides in this chunk into images/L{num}[_F{idx}]/, cache results."""
         if self.source == "screenshare":
-            # For screen share, frames are already extracted — just copy/link
-            # them into the notes images/ directory for consistent path references
+            # For screen share, frames are already extracted — copy them
+            # into the notes images/ directory using frame_NNN naming
             if self.file_idx == 1:
                 img_dir = self._out_dir / "images" / f"L{self.num:02d}"
             else:
@@ -1085,7 +1093,7 @@ class LectureData:
             for i in slide_indices:
                 if i in self.img_map:
                     src = self.img_map[i]
-                    dst = img_dir / f"slide_{i + 1:03d}.png"
+                    dst = img_dir / f"frame_{i + 1:03d}.png"
                     if not dst.exists():
                         import shutil
                         shutil.copy2(str(src), str(dst))
