@@ -47,6 +47,7 @@ const Term = (() => {
   let currentText    = '';   // current partial line buffer
   let scheduledRender = false;
   let renderedCount  = 0;    // lines[0..renderedCount-1] are already in the DOM
+  let _lastWasCR     = false; // cross-chunk CRLF state (Windows \r\n handling)
 
   function classify(text) {
     const t = text.toLowerCase().trimStart();
@@ -74,6 +75,14 @@ const Term = (() => {
 
     // If the DOM was wiped (after clear()), reset tracked count
     if (el.children.length === 0) renderedCount = 0;
+
+    // Prune orphaned nodes from the front (happen when MAX_LINES rolls lines off)
+    // DOM should have exactly renderedCount nodes + 1 partial placeholder
+    const expectedDOMNodes = renderedCount + 1;
+    if (el.children.length > expectedDOMNodes) {
+      const excess = el.children.length - expectedDOMNodes;
+      for (let i = 0; i < excess; i++) el.removeChild(el.firstChild);
+    }
 
     // Append only newly committed lines (don't touch existing DOM nodes)
     if (renderedCount < lines.length) {
@@ -108,20 +117,36 @@ const Term = (() => {
     if (atBottom) el.scrollTop = el.scrollHeight;
   }
 
+  function commitLine(t) {
+    if (t.startsWith('<frozen importlib')) return;
+    lines.push({ text: t, cls: classify(t) });
+    if (lines.length > MAX_LINES) {
+      lines.shift();
+      renderedCount = Math.max(0, renderedCount - 1);
+    }
+  }
+
   function process(raw) {
     const text = raw.replace(ANSI_RE, '');
-    for (const ch of text) {
-      if (ch === '\r') {
-        currentText = '';
-      } else if (ch === '\n') {
-        const t = currentText;
-        if (!t.startsWith('<frozen importlib')) {
-          lines.push({ text: t, cls: classify(t) });
-          if (lines.length > MAX_LINES) {
-            lines.shift();
-            renderedCount = Math.max(0, renderedCount - 1);
-          }
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (_lastWasCR) {
+        _lastWasCR = false;
+        if (ch === '\n') {
+          // \r\n (Windows CRLF) — commit the line built before the \r
+          commitLine(currentText);
+          currentText = '';
+          continue;
+        } else {
+          // Standalone \r — progress-bar overwrite; discard current partial
+          currentText = '';
+          // fall through to process ch
         }
+      }
+      if (ch === '\r') {
+        _lastWasCR = true; // defer: need to see if \n follows
+      } else if (ch === '\n') {
+        commitLine(currentText);
         currentText = '';
       } else {
         currentText += ch;
@@ -145,6 +170,7 @@ const Term = (() => {
     lines = [];
     currentText = '';
     renderedCount = 0;
+    _lastWasCR = false;
     const el = document.getElementById('terminal-output');
     if (el) el.innerHTML = '';
     setStatus('');
@@ -264,7 +290,7 @@ function runCmd(cmd, label = '') {
     Term.write('⚠  Already running — stop it first.', 'warn');
     return;
   }
-  Term.clear();
+  Term.write(`\n${'─'.repeat(60)}\n`, 'cmd');
   Term.showStop(true);
   Term.setStatus('● running…', 'var(--c-warn)');
   State.running = true;
@@ -290,6 +316,10 @@ function runCmd(cmd, label = '') {
 // Pipeline chain: run steps in sequence, abort on failure
 function runChain(steps) {
   if (!steps.length) return;
+  if (State.running) {
+    Term.write('⚠  Already running — stop it first.', 'warn');
+    return;
+  }
   let idx = 0;
   window.api.offProcessEvents();
 
@@ -325,7 +355,7 @@ function runChain(steps) {
     window.api.runProcess(cmd);
   }
 
-  Term.clear();
+  Term.write(`\n${'═'.repeat(60)}\n▶  Starting pipeline (${steps.length} step${steps.length !== 1 ? 's' : ''})\n`, 'cmd');
   runNext();
 }
 
