@@ -133,9 +133,10 @@ function saveCredentials(data) {
     mistral:   'mistral_key.txt',
   };
   for (const [key, file] of Object.entries(map)) {
-    if (data[key] !== undefined && data[key].trim()) {
-      fs.writeFileSync(path.join(DATA_DIR, file), data[key].trim());
-    }
+    // Strip ALL whitespace (including internal newlines) — guards against
+    // accidental paste of multiple tokens or copy with trailing newlines.
+    const val = (data[key] || '').replace(/\s+/g, '');
+    if (val) fs.writeFileSync(path.join(DATA_DIR, file), val);
   }
 }
 

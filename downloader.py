@@ -69,9 +69,11 @@ PANOPTO_HOST = _config.get("PANOPTO_HOST", "")
 
 _canvas_token_file = DATA_DIR / "canvas_token.txt"
 CANVAS_TOKEN = (
-    _canvas_token_file.read_text().strip()
-    if _canvas_token_file.exists() else
-    os.environ.get("CANVAS_TOKEN", "")
+    # strip() covers leading/trailing whitespace; split()[0] takes the first
+    # token only, guarding against files that accidentally contain two tokens
+    # separated by newlines (e.g. copy-paste from two accounts).
+    (_canvas_token_file.read_text().split()[0] if _canvas_token_file.exists() else None)
+    or os.environ.get("CANVAS_TOKEN", "")
 )
 SIZE_LIMIT    = 1 * 1024 ** 3   # 1 GB
 
@@ -223,6 +225,7 @@ def _find_panopto_items(canvas: Canvas, course) -> list[dict]:
                     "item_id":     s["session_id"],
                     "viewer_url":  viewer_url,
                     "_panopto_cookies": panopto_cookies,
+                    "_bearer_token":    bearer_token,
                 })
                 s2_count += 1
         else:
@@ -387,8 +390,14 @@ def _iter_panopto_folder(
         page_results = d.get("Results") or []
 
         for s in page_results:
-            sid  = s.get("DeliveryID") or s.get("SessionID")
-            name = s.get("SessionName", "")
+            sid      = s.get("DeliveryID") or s.get("SessionID")
+            name     = s.get("SessionName", "")
+            duration = s.get("Duration")
+            # Skip placeholder/empty sessions that have no video content.
+            # These appear as folder-level navigation entries (Duration=None)
+            # and return ErrorCode=6 from DeliveryInfo.aspx.
+            if duration is None:
+                continue
             if sid and name:
                 results.append({
                     "session_id":  sid,
@@ -559,29 +568,132 @@ def _get_panopto_session(launch_url: str) -> tuple[str | None, list[dict]]:
     return session_id, cookies
 
 
-def _get_stream_url(session_id: str, cookies: list[dict]) -> str | None:
+def _download_authenticated(
+    url: str,
+    out_path: "Path",
+    headers: dict,
+    progress_cb: "callable",
+) -> None:
+    """Stream-download a URL that requires auth headers, with progress callback."""
+    r = requests.get(url, headers=headers, stream=True, timeout=300, allow_redirects=True)
+    r.raise_for_status()
+    total = int(r.headers.get("Content-Length", 0))
+    downloaded = 0
+    with open(out_path, "wb") as f:
+        for chunk in r.iter_content(chunk_size=65536):
+            if chunk:
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total:
+                    progress_cb(downloaded / total * 100)
+    if not total:
+        progress_cb(100)
+
+
+def _get_stream_url(
+    session_id: str,
+    cookies: list[dict],
+    bearer_token: str | None = None,
+    course_id:    int | None = None,
+) -> tuple[str, dict] | None:
+    """Get the HLS stream URL for a Panopto session.
+
+    Returns (stream_url, auth_headers) on success, None on failure.
+    auth_headers is always {} (HLS streams are CDN-public once the URL is known).
+
+    Priority:
+      1. DeliveryInfo.aspx POST with Bearer token → HLS master.m3u8
+      2. Playwright LTI re-launch → navigate to Viewer.aspx → intercept DeliveryInfo
+    """
+    def _extract_stream(body: dict) -> str | None:
+        streams = (body.get("Delivery") or {}).get("Streams") or []
+        for tag in ("DV", "OBJECT", None):
+            for s in streams:
+                surl = s.get("StreamUrl", "")
+                if surl and (tag is None or s.get("Tag") == tag):
+                    return surl
+        return None
+
     sess = requests.Session()
     for ck in cookies:
         sess.cookies.set(ck["name"], ck["value"], domain=ck.get("domain", ""))
-    r = sess.post(
-        f"https://{PANOPTO_HOST}/Panopto/Pages/Viewer/DeliveryInfo.aspx",
-        data={
-            "deliveryId": session_id, "isLiveNotes": "false",
-            "refreshAuthCookie": "true", "isActiveBroadcast": "false",
-            "isEditing": "false", "isKollectiveAgentInstalled": "false",
-            "isEmbed": "true", "responseType": "json",
-        },
-        timeout=30,
-    )
-    if r.status_code != 200:
+    auth_hdrs: dict = {}
+    if bearer_token:
+        auth_hdrs["Authorization"] = f"Bearer {bearer_token}"
+
+    # ── 1. DeliveryInfo.aspx POST ─────────────────────────────────────────────
+    # The bearer token in Authorization header allows the server to validate
+    # the LTI enrollment context and return the HLS stream URL.
+    delivery_url = f"https://{PANOPTO_HOST}/Panopto/Pages/Viewer/DeliveryInfo.aspx"
+    try:
+        r = sess.post(
+            delivery_url,
+            data={
+                "deliveryId": session_id, "isLiveNotes": "false",
+                "refreshAuthCookie": "true", "isActiveBroadcast": "false",
+                "isEditing": "false", "isKollectiveAgentInstalled": "false",
+                "isEmbed": "false", "responseType": "json",
+            },
+            headers=auth_hdrs,
+            timeout=30,
+        )
+        if r.status_code == 200:
+            body = r.json()
+            if not body.get("ErrorCode"):
+                surl = _extract_stream(body)
+                if surl:
+                    return surl, {}
+    except Exception:
+        pass
+
+    # ── 3. Playwright LTI re-launch → viewer intercept ───────────────────────
+    if course_id is None:
         return None
-    streams = r.json().get("Delivery", {}).get("Streams", [])
-    for tag in ("DV", "OBJECT", None):
-        for s in streams:
-            url = s.get("StreamUrl", "")
-            if url and (tag is None or s.get("Tag") == tag):
-                return url
-    return None
+
+    tqdm.write(f"  DeliveryInfo unavailable; re-launching via Canvas LTI…")
+    r2 = requests.get(
+        f"{CANVAS_URL}/api/v1/courses/{course_id}/external_tools/sessionless_launch"
+        f"?id={_PANOPTO_TAB_TOOL_ID}&launch_type=course_navigation",
+        headers=_canvas_headers(), timeout=30,
+    )
+    if r2.status_code != 200:
+        return None
+    launch_url = r2.json().get("url")
+    if not launch_url:
+        return None
+
+    from playwright.sync_api import sync_playwright
+
+    viewer_page_url = f"https://{PANOPTO_HOST}/Panopto/Pages/Viewer.aspx?id={session_id}"
+    captured: list[tuple[str, dict]] = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx     = browser.new_context()
+        page    = ctx.new_page()
+
+        def _on_response(resp) -> None:
+            if "DeliveryInfo.aspx" in resp.url and not captured:
+                try:
+                    body = resp.json()
+                    surl = _extract_stream(body)
+                    if surl:
+                        captured.append((surl, {}))
+                except Exception:
+                    pass
+
+        page.on("response", _on_response)
+        try:
+            page.goto(launch_url, wait_until="networkidle", timeout=60000)
+            time.sleep(2)
+            page.goto(viewer_page_url, wait_until="networkidle", timeout=60000)
+            time.sleep(3)
+        except Exception as e:
+            tqdm.write(f"  [warn] Playwright viewer: {e}")
+        finally:
+            browser.close()
+
+    return captured[0] if captured else None
 
 
 def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
@@ -621,14 +733,16 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
         return None
 
     # ── Resolve session_id + cookies ──────────────────────────────────────────
+    bearer_token: str | None = None
     if viewer_url:
         # Non-module session: session_id is the UUID stored as item_id.
         session_id = str(item_id)
         # Use cookies cached during discovery if available, otherwise re-auth.
-        cookies = video.get("_panopto_cookies") or []
+        cookies      = video.get("_panopto_cookies") or []
+        bearer_token = video.get("_bearer_token")
         if not cookies:
             tqdm.write(f"  Re-authenticating via Videos/Panopto tab…")
-            _, cookies, _bt = _get_panopto_tab_folder(course_id)
+            _, cookies, bearer_token = _get_panopto_tab_folder(course_id)
         if not cookies:
             tqdm.write(f"  [error] Could not obtain Panopto auth cookies")
             manifest[key] = {"status": "error", "title": title}
@@ -648,11 +762,16 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
             manifest[key] = {"status": "error", "title": title}
             return False
 
-    stream_url = _get_stream_url(session_id, cookies)
-    if not stream_url:
+    result = _get_stream_url(
+        session_id, cookies,
+        bearer_token=bearer_token,
+        course_id=course_id if viewer_url else None,
+    )
+    if not result:
         tqdm.write(f"  [error] Could not get stream URL")
         manifest[key] = {"status": "error", "title": title}
         return False
+    stream_url, dl_headers = result
 
     bar = tqdm(total=100, desc=f"  {title[:50]}", unit="%",
                bar_format="{desc} |{bar}| {n:3d}/{total}%", leave=True)
@@ -662,7 +781,22 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
         bar.refresh()
 
     try:
-        PanoptoDownloader.download(stream_url, str(out_path), progress_cb)
+        if dl_headers:
+            # Direct authenticated download (e.g. REST API DownloadUrl)
+            _download_authenticated(stream_url, out_path, dl_headers, progress_cb)
+        elif "master.m3u8" in stream_url:
+            # HLS stream — use ffmpeg (handles query params that PanoptoDownloader misses)
+            from shutil import which
+            from ffmpeg_progress_yield import FfmpegProgress
+            if which("ffmpeg"):
+                cmd = ["ffmpeg", "-f", "hls", "-i", stream_url, "-c", "copy", str(out_path)]
+                ff = FfmpegProgress(cmd)
+                for pct in ff.run_command_with_progress():
+                    progress_cb(pct)
+            else:
+                PanoptoDownloader.download(stream_url, str(out_path), progress_cb)
+        else:
+            PanoptoDownloader.download(stream_url, str(out_path), progress_cb)
         bar.n = 100
         bar.refresh()
         bar.close()
