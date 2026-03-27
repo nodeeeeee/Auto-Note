@@ -38,10 +38,16 @@ from typing import NamedTuple
 try:
     import faiss
     import numpy as np
+    _HAS_ML = True
 except ImportError as _e:
-    print(f"[error] Missing dependency: {_e}")
-    print("[error] Please install the ML environment from Settings → ML Environment in the AutoNote app.")
-    sys.exit(1)
+    _HAS_ML = False
+    # numpy is needed almost everywhere — try standalone import
+    try:
+        import numpy as np
+    except ImportError:
+        np = None  # type: ignore[assignment]
+    # Don't sys.exit here — some operations (like --suggest-matches) can
+    # work without faiss.  The functions that need it will fail at call time.
 
 PROJECT_DIR = Path(__file__).parent
 import sys as _sys
@@ -1437,7 +1443,13 @@ def suggest_matches(
         print(f"  [match] No caption text extracted from {len(captions)} file(s) — check captions dir")
         return {}
     if not slide_texts:
-        print(f"  [match] No slide text extracted from {len(all_slides)} file(s) — check materials dir")
+        # Check if the issue is missing pymupdf
+        try:
+            import fitz  # noqa: F401
+            print(f"  [match] No slide text extracted from {len(all_slides)} file(s) — check materials dir")
+        except ImportError:
+            print(f"  [match] pymupdf (fitz) not installed — cannot extract text from PDF slides")
+            print(f"  [match] Install with: pip install pymupdf")
         print(f"  [match] Slide paths tried: {[s.name for s in all_slides[:5]]}")
         return {}
 

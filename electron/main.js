@@ -996,32 +996,52 @@ function registerIpc() {
   ipcMain.handle('align:suggestMatches', async (_, { cid, model }) => {
     const python = getPythonPath();
     const script = SCRIPTS.align;
+    const outDir = getOutputDir();
+    console.log(`[align:suggestMatches] python=${python} script=${script} course=${cid} model=${model} outDir=${outDir}`);
+
     const cmd = [python, script, '--course', String(cid),
                  '--suggest-matches', '--match-model', model || 'bge-m3'];
     return new Promise((resolve) => {
-      const proc = spawn(cmd[0], cmd.slice(1), {
-        env: { ...process.env, AUTONOTE_DATA_DIR: DATA_DIR },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      let proc;
+      try {
+        proc = spawn(cmd[0], cmd.slice(1), {
+          env: { ...process.env, AUTONOTE_DATA_DIR: DATA_DIR },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (e) {
+        resolve({ __error: `Failed to spawn: ${e.message}` });
+        return;
+      }
       let stdout = '';
       let stderr = '';
       proc.stdout.on('data', d => { stdout += d.toString(); });
       proc.stderr.on('data', d => { stderr += d.toString(); });
+      proc.on('error', (e) => {
+        resolve({ __error: `Process error: ${e.message}` });
+      });
       proc.on('close', (code) => {
+        // Combine stdout+stderr for diagnostics (Python prints to both)
+        const combined = stdout + '\n' + stderr;
         if (code !== 0) {
-          console.error(`[align:suggestMatches] exit ${code}\n${stderr.slice(-500)}`);
-          resolve({ __error: `Process exited with code ${code}: ${stderr.slice(-300)}` });
+          // Look for common errors
+          let hint = '';
+          if (combined.includes('No module named')) {
+            const m = combined.match(/No module named '([^']+)'/);
+            hint = m ? `Missing package: ${m[1]}. Reinstall ML environment.` : '';
+          }
+          console.error(`[align:suggestMatches] exit ${code}\n${combined.slice(-500)}`);
+          resolve({ __error: hint || `Process exited with code ${code}. ${combined.slice(-200)}` });
           return;
         }
         const marker = '__MATCH_RESULT__';
-        const idx = stdout.indexOf(marker);
+        const idx = combined.indexOf(marker);
         if (idx < 0) {
-          console.error(`[align:suggestMatches] no marker in output:\n${stdout.slice(-300)}`);
-          resolve({ __error: `No results returned. Output: ${stdout.slice(-200)}` });
+          console.error(`[align:suggestMatches] no marker:\n${combined.slice(-500)}`);
+          resolve({ __error: `No match results. Log: ${combined.slice(-300)}` });
           return;
         }
         try {
-          resolve(JSON.parse(stdout.slice(idx + marker.length).trim()));
+          resolve(JSON.parse(combined.slice(idx + marker.length).trim()));
         } catch (e) {
           resolve({ __error: `JSON parse error: ${e.message}` });
         }
