@@ -933,6 +933,33 @@ function registerIpc() {
     return { captions, slides, titles, mapping, base };
   });
 
+  // Embedding-based smart matching — calls Python semantic_alignment.py --suggest-matches
+  ipcMain.handle('align:suggestMatches', async (_, { cid, model }) => {
+    const python = getPythonPath();
+    const script = SCRIPTS.align;
+    const cmd = [python, script, '--course', String(cid),
+                 '--suggest-matches', '--match-model', model || 'bge-m3'];
+    return new Promise((resolve) => {
+      const proc = spawn(cmd[0], cmd.slice(1), {
+        env: { ...process.env, AUTONOTE_DATA_DIR: DATA_DIR },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      proc.stdout.on('data', d => { stdout += d.toString(); });
+      proc.stderr.on('data', d => { /* progress output — ignore */ });
+      proc.on('close', (code) => {
+        if (code !== 0) { resolve({}); return; }
+        // Extract JSON after the __MATCH_RESULT__ marker
+        const marker = '__MATCH_RESULT__';
+        const idx = stdout.indexOf(marker);
+        if (idx < 0) { resolve({}); return; }
+        try {
+          resolve(JSON.parse(stdout.slice(idx + marker.length).trim()));
+        } catch { resolve({}); }
+      });
+    });
+  });
+
   ipcMain.handle('align:saveMapping', (_, { cid, mapping }) => {
     const outDir   = getOutputDir();
     const alignDir = path.join(outDir, String(cid), 'alignment');

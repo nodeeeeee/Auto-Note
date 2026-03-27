@@ -1380,6 +1380,110 @@ def _content_match_slide_group(
     return [best]
 
 
+# ── Embedding-based video↔slide matching ─────────────────────────────────────
+
+MATCH_MODELS = {
+    "bge-m3":      "BAAI/bge-m3",
+    "jina":        "jina-embeddings-v4",   # via Jina API
+    "google":      "google-embedding-v2",  # placeholder — not yet implemented
+    "mpnet":       "all-mpnet-base-v2",    # local fallback
+}
+
+
+def suggest_matches(
+    course_dir: Path,
+    model: str = "bge-m3",
+) -> dict[str, str]:
+    """Match each caption to its best slide file using embedding similarity.
+
+    Embeds a text sample from each transcript and each slide file, then
+    finds the highest cosine-similarity pair for every caption.
+
+    Args:
+        course_dir: path containing captions/ and materials/
+        model: embedding model key — "bge-m3" (default), "jina", "mpnet"
+
+    Returns:
+        {caption_stem: "materials/relative/path.pdf", ...}
+    """
+    captions_dir = course_dir / "captions"
+    captions = sorted(captions_dir.glob("*.json")) if captions_dir.exists() else []
+    all_slides = _candidate_slides(course_dir)
+
+    if not captions or not all_slides:
+        return {}
+
+    print(f"  [match] Embedding-based matching with model={model}")
+    print(f"  [match] {len(captions)} caption(s), {len(all_slides)} slide file(s)")
+
+    # ── Sample text from each source ─────────────────────────────────────────
+    cap_texts: list[str] = []
+    cap_stems: list[str] = []
+    for cap in captions:
+        t = _sample_caption_text(cap)
+        if t.strip():
+            cap_texts.append(t)
+            cap_stems.append(cap.stem)
+
+    slide_texts: list[str] = []
+    slide_paths: list[Path] = []
+    for sp in all_slides:
+        t = _sample_slide_text(sp)
+        if t.strip():
+            slide_texts.append(t)
+            slide_paths.append(sp)
+
+    if not cap_texts or not slide_texts:
+        print("  [match] Not enough text to embed — falling back to heuristics")
+        return {}
+
+    # ── Embed with selected model ────────────────────────────────────────────
+    if model == "jina":
+        cap_embs = embed_texts_jina(cap_texts, desc="  [match] captions")
+        slide_embs = embed_texts_jina(slide_texts, desc="  [match] slides")
+        if cap_embs is None or slide_embs is None:
+            print("  [match] Jina API failed — falling back to heuristics")
+            return {}
+    else:
+        # Local model: bge-m3 or mpnet
+        model_name = MATCH_MODELS.get(model, MATCH_MODELS["bge-m3"])
+        try:
+            from sentence_transformers import SentenceTransformer
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"  [match] Loading {model_name} on {device}...")
+            embedder = SentenceTransformer(model_name, device=device)
+            all_texts = cap_texts + slide_texts
+            embs = embedder.encode(
+                all_texts,
+                batch_size=32,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+            ).astype(np.float32)
+            cap_embs = embs[:len(cap_texts)]
+            slide_embs = embs[len(cap_texts):]
+            print(f"  [match] Embedded {len(cap_texts)} + {len(slide_texts)} texts")
+        except Exception as e:
+            print(f"  [match] Model load failed: {e} — falling back to heuristics")
+            return {}
+
+    # ── Cosine similarity → best match per caption ───────────────────────────
+    sims = cap_embs @ slide_embs.T  # (n_caps, n_slides)
+
+    result: dict[str, str] = {}
+    for i, stem in enumerate(cap_stems):
+        best_j = int(np.argmax(sims[i]))
+        best_sim = float(sims[i, best_j])
+        best_path = slide_paths[best_j]
+        rel = str(best_path.relative_to(course_dir))
+        print(f"  [match] {stem} → {best_path.name}  (sim={best_sim:.3f})")
+        if best_sim > 0.15:
+            result[stem] = rel
+
+    return result
+
+
 def _load_mapping(mapping_path: Path, course_dir: Path) -> dict[str, list[Path]]:
     """Load a user-supplied video↔slide mapping JSON.
 
@@ -1526,7 +1630,24 @@ def main() -> None:
                         help="User-supplied video↔slide mapping JSON file. "
                              "Format: {\"caption_stem\": [\"slide_path\", ...]}. "
                              "Unmapped captions fall back to auto-discovery.")
+    parser.add_argument("--suggest-matches", action="store_true",
+                        help="Suggest video↔slide matches using embedding similarity "
+                             "(outputs JSON to stdout). Does NOT run alignment.")
+    parser.add_argument("--match-model", metavar="MODEL", default="bge-m3",
+                        choices=["bge-m3", "jina", "mpnet"],
+                        help="Embedding model for --suggest-matches "
+                             "(default: bge-m3, alternatives: jina, mpnet)")
     args = parser.parse_args()
+
+    if args.suggest_matches:
+        if not args.course:
+            parser.error("--suggest-matches requires --course ID")
+        course_dir = COURSE_DATA_DIR / str(args.course)
+        matches = suggest_matches(course_dir, model=args.match_model)
+        # Output as JSON for IPC consumption
+        print("\n__MATCH_RESULT__")
+        print(json.dumps(matches, indent=2))
+        return
 
     if args.course:
         mapping = Path(args.mapping) if args.mapping else None

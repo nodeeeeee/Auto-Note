@@ -654,6 +654,17 @@ function buildAlign() {
         </div>
         <button class="btn-primary" id="align-scan-btn">${I.search || '🔍'} Scan videos &amp; slides</button>
       </div>
+      <div class="row" style="margin-top:8px;align-items:flex-end;gap:8px">
+        <div class="col">
+          <span class="label">Matching model</span>
+          <select id="align-match-model" class="select-ctrl" style="min-width:160px">
+            <option value="bge-m3" selected>BGE-M3 (recommended)</option>
+            <option value="jina">Jina Embeddings v4</option>
+            <option value="mpnet">all-mpnet-base-v2</option>
+          </select>
+        </div>
+        <button class="btn-outline" id="align-smart-btn">Smart match (embedding)</button>
+      </div>
       <div id="align-match-status" style="font-size:11px;color:var(--c-white-45);margin:4px 0 6px 0"></div>
       <div id="align-match-rows"></div>
       <div class="row" style="margin-top:12px;gap:12px">
@@ -1457,6 +1468,35 @@ async function attachPageHandlers() {
 
       _alignRebuildRows();
       snack(`Found ${data.captions.length} video(s), ${data.slides.length} slide file(s).`);
+    });
+
+    // Smart match button — embedding-based matching
+    document.getElementById('align-smart-btn')?.addEventListener('click', async () => {
+      const cid = AlignState.courseId || document.getElementById('align-course')?.value;
+      if (!cid) { snack('Select a course first.', false); return; }
+      if (!AlignState.rows.length) { snack('Click "Scan" first.', false); return; }
+
+      const model = document.getElementById('align-match-model')?.value || 'bge-m3';
+      const statusEl = document.getElementById('align-match-status');
+      if (statusEl) statusEl.textContent = `Running ${model} embedding matching… (this may take a moment)`;
+
+      const matches = await window.api.alignSuggestMatches(cid, model);
+
+      if (!matches || !Object.keys(matches).length) {
+        snack('Embedding matching returned no results — using heuristic suggestions.', false);
+        return;
+      }
+
+      // Apply embedding suggestions to rows
+      let updated = 0;
+      for (const row of AlignState.rows) {
+        if (matches[row.stem]) {
+          row.slides = [matches[row.stem]];
+          updated++;
+        }
+      }
+      _alignRebuildRows();
+      snack(`Smart match: ${updated}/${AlignState.rows.length} video(s) matched via ${model}.`);
     });
 
     // Align with mapping button

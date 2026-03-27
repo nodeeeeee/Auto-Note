@@ -52,8 +52,9 @@ contextBridge.exposeInMainWorld('api', {
   listLectures:   (cid)  => ipcRenderer.invoke('course:listLectures', cid),
 
   // ── Align: scan + mapping ───────────────────────────────────────────────
-  alignScan:       (cid)          => ipcRenderer.invoke('align:scan', cid),
-  alignSaveMapping:(cid, mapping) => ipcRenderer.invoke('align:saveMapping', { cid, mapping }),
+  alignScan:           (cid)               => ipcRenderer.invoke('align:scan', cid),
+  alignSuggestMatches: (cid, model)       => ipcRenderer.invoke('align:suggestMatches', { cid, model }),
+  alignSaveMapping:    (cid, mapping)     => ipcRenderer.invoke('align:saveMapping', { cid, mapping }),
 
   // ── OS/Dialog helpers ─────────────────────────────────────────────────────
   openDirDialog:  ()     => ipcRenderer.invoke('dialog:openDir'),
