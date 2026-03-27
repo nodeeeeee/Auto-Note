@@ -81,13 +81,24 @@ def _script(name: str) -> Path:
     return PROJECT_DIR / name   # dev mode: scripts are in the project root
 
 
-SCRIPTS = {
-    "downloader":      _script("downloader.py"),
-    "transcribe":      _script("extract_caption.py"),
-    "frame_extractor": _script("frame_extractor.py"),
-    "align":           _script("semantic_alignment.py"),
-    "generate":        _script("note_generation.py"),
-}
+# Lazily-resolved script paths.  In AppImage mode, _install_scripts() copies
+# scripts to SCRIPTS_DIR *after* module load, so we must re-resolve on first
+# access rather than caching stale paths from module-init time.
+class _ScriptDict(dict):
+    """Dict that re-resolves script paths on every access."""
+    _NAMES = {
+        "downloader":      "downloader.py",
+        "transcribe":      "extract_caption.py",
+        "frame_extractor": "frame_extractor.py",
+        "align":           "semantic_alignment.py",
+        "generate":        "note_generation.py",
+    }
+    def __getitem__(self, key: str) -> Path:
+        return _script(self._NAMES[key])
+    def __contains__(self, key: object) -> bool:
+        return key in self._NAMES
+
+SCRIPTS = _ScriptDict()
 
 _DEFAULT_PYTHON = PYTHON   # auto-detected fallback; may be overridden by user config
 
@@ -381,23 +392,36 @@ def _write_constant(script_key: str, name: str, new_display_val: str) -> bool:
     try:
         src = path.read_text(errors="ignore")
 
-        def _replacer(m: re.Match) -> str:
+        def _format_val() -> str:
             # None keyword → bare None
             if new_display_val == "None":
-                return m.group(1) + "None"
+                return "None"
             # Numeric → bare (int or float)
             try:
                 float(new_display_val)
-                return m.group(1) + new_display_val
+                return new_display_val
             except ValueError:
                 pass
             # String → always quoted
-            return m.group(1) + f'"{new_display_val}"'
+            return f'"{new_display_val}"'
 
+        formatted = _format_val()
+
+        # Match: NAME = VALUE [# optional comment]
+        # The value part may be a quoted string, bare identifier, or number.
+        # Preserve any inline comment that follows.
         new_src, n = re.subn(
-            rf'^({name}\s*=\s*)([^\n#]+)',
-            _replacer, src, count=1, flags=re.MULTILINE,
+            rf'^({name}\s*=\s*)([^\n#]+)(#[^\n]*)?$',
+            lambda m: m.group(1) + formatted + ("   " + m.group(3) if m.group(3) else ""),
+            src, count=1, flags=re.MULTILINE,
         )
+        if n == 0:
+            # Fallback: value might be glued to comment (e.g. "None# comment")
+            new_src, n = re.subn(
+                rf'^({name}\s*=\s*)(\S+)(#[^\n]*)?$',
+                lambda m: m.group(1) + formatted + ("   " + m.group(3) if m.group(3) else ""),
+                src, count=1, flags=re.MULTILINE,
+            )
         if n == 0:
             return False
         path.write_text(new_src)
