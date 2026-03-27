@@ -1222,16 +1222,20 @@ def build_align(page: ft.Page, console: OutputConsole) -> ft.Column:
     )
 
     # ── Video ↔ Slide Matching ───────────────────────────────────────────────
-    match_rows_col = ft.Column(controls=[], spacing=4)
-    match_status   = ft.Text("", size=11, color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE))
-    _match_state: dict = {"rows": [], "base": None}
+    match_rows_col = ft.Column(controls=[], spacing=0)
+    match_status   = ft.Text("", size=11,
+                             color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE))
 
-    def _auto_suggest(cap_stem: str, slides: list, base: Path) -> str:
-        """Find the best auto-match for a caption using name similarity."""
+    # State:  rows = [ {stem, title, aligned, container, slide_dropdowns: [dd,...]} ]
+    _match_state: dict = {"rows": [], "base": None, "slide_opts": []}
+
+    def _auto_suggest(cap_stem: str, slides: list, base: Path) -> list[str]:
+        """Find auto-matched slides for a caption. Returns list of rel paths."""
         import re as _re
+        results: list[str] = []
         cap_lower = cap_stem.lower().replace("-", " ").replace("_", " ")
         cap_tokens = set(cap_lower.split())
-        best_score, best_rel = 0.0, "(none)"
+        best_score, best_rel = 0.0, ""
         for sp in slides:
             sl = sp.stem.lower().replace("-", " ").replace("_", " ")
             sl_tokens = set(sl.split())
@@ -1240,7 +1244,6 @@ def build_align(page: ft.Page, console: OutputConsole) -> ft.Column:
                 if score > best_score:
                     best_score = score
                     best_rel = str(sp.relative_to(base))
-            # Also try lecture number matching
             cap_num = _re.search(r"week\s*(\d+)|lec(?:ture)?\s*(\d+)|[Ll](\d+)", cap_stem)
             sl_num  = _re.search(r"[Ll](?:ecture)?\s*(\d+)", sp.stem)
             if cap_num and sl_num:
@@ -1249,14 +1252,156 @@ def build_align(page: ft.Page, console: OutputConsole) -> ft.Column:
                 if cn == sn:
                     best_rel = str(sp.relative_to(base))
                     best_score = 1.0
-        return best_rel if best_score > 0.05 else "(none)"
+        if best_score > 0.05 and best_rel:
+            results.append(best_rel)
+        return results
+
+    def _make_slide_dropdown(initial: str = "(none)") -> ft.Dropdown:
+        """Create a single slide-file dropdown."""
+        return ft.Dropdown(
+            options=list(_match_state["slide_opts"]),
+            value=initial,
+            dense=True,
+            bgcolor=C_OUTPUT_BG,
+            border_color=(ft.Colors.GREEN_400 if initial != "(none)"
+                          else ft.Colors.with_opacity(0.3, ft.Colors.WHITE)),
+            text_size=11,
+            expand=True,
+            content_padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+        )
+
+    def _build_video_row(row_data: dict) -> ft.Container:
+        """Build the UI container for one video row."""
+        stem     = row_data["stem"]
+        title    = row_data["title"]
+        aligned  = row_data["aligned"]
+        dds      = row_data["slide_dropdowns"]
+
+        # Status chip
+        if aligned:
+            status = ft.Tooltip(
+                message="Already aligned",
+                content=ft.Icon(ft.Icons.CHECK_CIRCLE, size=14,
+                                color=ft.Colors.GREEN_400))
+        else:
+            status = ft.Tooltip(
+                message="Not yet aligned",
+                content=ft.Icon(ft.Icons.CIRCLE_OUTLINED, size=14,
+                                color=ft.Colors.with_opacity(0.3, ft.Colors.WHITE)))
+
+        # Delete (×) button — removes this video from the list
+        def _remove(_evt, _stem=stem):
+            _match_state["rows"] = [r for r in _match_state["rows"]
+                                    if r["stem"] != _stem]
+            _rebuild_rows()
+
+        remove_btn = ft.IconButton(
+            icon=ft.Icons.CLOSE, icon_size=14,
+            icon_color=ft.Colors.RED_300,
+            tooltip="Remove this video",
+            on_click=_remove,
+            style=ft.ButtonStyle(padding=0),
+        )
+
+        # Add (+) button — append another slide dropdown for multi-part lectures
+        def _add_slide(_evt, _row=row_data):
+            new_dd = _make_slide_dropdown()
+            _row["slide_dropdowns"].append(new_dd)
+            _rebuild_rows()
+
+        add_btn = ft.IconButton(
+            icon=ft.Icons.ADD, icon_size=14,
+            icon_color=C_PRIMARY,
+            tooltip="Add another slide file (multi-part lecture)",
+            on_click=_add_slide,
+            style=ft.ButtonStyle(padding=0),
+        )
+
+        # Remove (−) button for extra dropdowns (index > 0)
+        def _make_remove_dd(_row, _idx):
+            def _handler(_evt):
+                if len(_row["slide_dropdowns"]) > 1:
+                    _row["slide_dropdowns"].pop(_idx)
+                    _rebuild_rows()
+            return _handler
+
+        # Build slide selector rows
+        slide_controls: list[ft.Control] = []
+        for i, dd in enumerate(dds):
+            row_ctrls = [dd]
+            if i == 0:
+                row_ctrls.append(add_btn)
+            else:
+                rm = ft.IconButton(
+                    icon=ft.Icons.REMOVE, icon_size=14,
+                    icon_color=ft.Colors.RED_300,
+                    tooltip="Remove this slide file",
+                    on_click=_make_remove_dd(row_data, i),
+                    style=ft.ButtonStyle(padding=0),
+                )
+                row_ctrls.append(rm)
+            slide_controls.append(
+                ft.Row(controls=row_ctrls, spacing=2,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER))
+
+        # Assemble: [×] [status] [title]  →  [slide dropdown(s)] [+]
+        return ft.Container(
+            content=ft.Row(controls=[
+                remove_btn,
+                status,
+                ft.Text(title, size=11, width=220,
+                        color=ft.Colors.WHITE,
+                        overflow=ft.TextOverflow.ELLIPSIS),
+                ft.Icon(ft.Icons.ARROW_FORWARD, size=12,
+                        color=ft.Colors.with_opacity(0.3, ft.Colors.WHITE)),
+                ft.Column(controls=slide_controls, spacing=2, expand=True),
+            ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding(left=0, top=4, right=0, bottom=4),
+            border=ft.Border(bottom=ft.BorderSide(
+                1, ft.Colors.with_opacity(0.06, ft.Colors.WHITE))),
+        )
+
+    def _rebuild_rows() -> None:
+        """Rebuild the visual row list from _match_state["rows"]."""
+        match_rows_col.controls.clear()
+        if not _match_state["rows"]:
+            return
+        # Header
+        match_rows_col.controls.append(ft.Container(
+            content=ft.Row(controls=[
+                ft.Container(width=28),  # space for × button
+                ft.Container(width=14),  # space for status icon
+                ft.Text("Video", size=10, width=220,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.with_opacity(0.4, ft.Colors.WHITE)),
+                ft.Container(width=12),
+                ft.Text("Lecture slides", size=10,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.with_opacity(0.4, ft.Colors.WHITE),
+                        expand=True),
+            ], spacing=4),
+            padding=ft.Padding(left=0, top=0, right=0, bottom=2),
+        ))
+        for row_data in _match_state["rows"]:
+            row_data["container"] = _build_video_row(row_data)
+            match_rows_col.controls.append(row_data["container"])
+
+        n_matched = sum(1 for r in _match_state["rows"]
+                        if any(d.value and d.value != "(none)"
+                               for d in r["slide_dropdowns"]))
+        n_total   = len(_match_state["rows"])
+        match_status.value = (
+            f"{n_total} video(s) shown, "
+            f"{n_matched} matched to slides."
+        )
+        page.update()
 
     def _scan_matching(_) -> None:
         """Scan course folder for captions and slide files, build matching UI."""
         cid = course_val["v"]
         base = _get_output_dir() / cid
-        cap_dir = base / "captions"
-        mat_dir = base / "materials"
+        cap_dir   = base / "captions"
+        mat_dir   = base / "materials"
         align_dir = base / "alignment"
 
         captions = sorted(cap_dir.glob("*.json")) if cap_dir.exists() else []
@@ -1270,6 +1415,9 @@ def build_align(page: ft.Page, console: OutputConsole) -> ft.Column:
         if not captions:
             console.write("No captions found. Transcribe videos first.", color=C_WARN)
             return
+        if not slides:
+            console.write("No slide files found. Download materials first.", color=C_WARN)
+            return
 
         # Load manifest for video titles
         manifest: dict = {}
@@ -1280,7 +1428,7 @@ def build_align(page: ft.Page, console: OutputConsole) -> ft.Column:
             except Exception:
                 pass
 
-        # Load existing mapping if present
+        # Load existing mapping
         existing_mapping: dict = {}
         mapping_file = align_dir / "video_slide_mapping.json"
         if mapping_file.exists():
@@ -1289,88 +1437,53 @@ def build_align(page: ft.Page, console: OutputConsole) -> ft.Column:
             except Exception:
                 pass
 
-        # Build dropdown options
+        # Build dropdown option list (shared across all dropdowns)
         slide_opts = [ft.dropdown.Option("(none)", "(none — auto-detect)")]
         for sp in slides:
             rel = str(sp.relative_to(base))
-            # Show relative path for clarity when there are subfolders
             slide_opts.append(ft.dropdown.Option(rel, rel))
-
-        _match_state["rows"] = []
+        _match_state["slide_opts"] = slide_opts
         _match_state["base"] = base
-        match_rows_col.controls.clear()
+        _match_state["rows"] = []
 
-        # Header row
-        match_rows_col.controls.append(ft.Row(controls=[
-            ft.Text("Video", size=11, weight=ft.FontWeight.BOLD,
-                    width=280, color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE)),
-            ft.Container(width=14),
-            ft.Text("Lecture slides", size=11, weight=ft.FontWeight.BOLD,
-                    color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE), expand=True),
-        ], spacing=8))
-        match_rows_col.controls.append(ft.Divider(
-            height=1, color=ft.Colors.with_opacity(0.1, ft.Colors.WHITE)))
+        valid_keys = {o.key for o in slide_opts}
 
         for cap in captions:
-            # Determine video title from manifest
+            # Video title from manifest
             title = cap.stem
             for entry in manifest.values():
-                if entry.get("status") == "done" and entry.get("title", "").replace("/", "_").replace(":", "_") == cap.stem:
+                if (entry.get("status") == "done" and
+                    entry.get("title", "").replace("/", "_").replace(":", "_") == cap.stem):
                     title = entry["title"]
                     break
 
-            # Check alignment status
             aligned = (align_dir / f"{cap.stem}.json").exists() if align_dir.exists() else False
 
-            # Pick initial value: existing mapping > auto-suggest > (none)
-            if cap.stem in existing_mapping:
-                initial = existing_mapping[cap.stem][0] if existing_mapping[cap.stem] else "(none)"
+            # Initial values: existing mapping > auto-suggest > (none)
+            if cap.stem in existing_mapping and existing_mapping[cap.stem]:
+                initials = [v for v in existing_mapping[cap.stem] if v in valid_keys]
+                if not initials:
+                    initials = ["(none)"]
             else:
-                initial = _auto_suggest(cap.stem, slides, base)
+                initials = _auto_suggest(cap.stem, slides, base)
+                if not initials:
+                    initials = ["(none)"]
 
-            # Validate the initial value exists in options
-            valid_keys = {o.key for o in slide_opts}
-            if initial not in valid_keys:
-                initial = "(none)"
+            dds = [_make_slide_dropdown(v) for v in initials]
 
-            dd = ft.Dropdown(
-                options=list(slide_opts),
-                value=initial,
-                dense=True,
-                bgcolor=C_OUTPUT_BG,
-                border_color=ft.Colors.GREEN_400 if initial != "(none)" else ft.Colors.with_opacity(0.3, ft.Colors.WHITE),
-                text_size=11,
-                expand=True,
-                content_padding=ft.Padding.symmetric(horizontal=8, vertical=2),
-            )
-            _match_state["rows"].append({"stem": cap.stem, "dropdown": dd})
+            _match_state["rows"].append({
+                "stem": cap.stem,
+                "title": title,
+                "aligned": aligned,
+                "slide_dropdowns": dds,
+                "container": None,
+            })
 
-            # Status indicator
-            if aligned:
-                status_icon = ft.Icon(ft.Icons.CHECK_CIRCLE, size=14, color=ft.Colors.GREEN_400)
-                status_tip  = ft.Tooltip(message="Already aligned", content=status_icon)
-            else:
-                status_icon = ft.Icon(ft.Icons.CIRCLE_OUTLINED, size=14,
-                                      color=ft.Colors.with_opacity(0.3, ft.Colors.WHITE))
-                status_tip  = ft.Tooltip(message="Not yet aligned", content=status_icon)
-
-            match_rows_col.controls.append(
-                ft.Row(controls=[
-                    status_tip,
-                    ft.Text(title, size=11, width=260,
-                            color=ft.Colors.WHITE, overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Icon(ft.Icons.ARROW_FORWARD, size=12,
-                            color=ft.Colors.with_opacity(0.4, ft.Colors.WHITE)),
-                    dd,
-                ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-            )
-
-        n_auto = sum(1 for r in _match_state["rows"] if r["dropdown"].value != "(none)")
-        match_status.value = (
-            f"{len(captions)} video(s), {len(slides)} slide file(s).  "
-            f"{n_auto} auto-matched."
-        )
-        page.update()
+        _rebuild_rows()
+        console.write(
+            f"Found {len(captions)} video(s), {len(slides)} slide file(s). "
+            "Adjust matches as needed, then click 'Align'.",
+            color=C_SUCCESS)
 
     def _run_with_mapping(_) -> None:
         """Save the mapping and run alignment."""
@@ -1378,23 +1491,22 @@ def build_align(page: ft.Page, console: OutputConsole) -> ft.Column:
         base = _match_state.get("base") or _get_output_dir() / cid
 
         if not _match_state["rows"]:
-            console.write("Click 'Scan' first to discover videos and slides.", color=C_WARN)
+            console.write("Click 'Scan' first to load videos and slides.",
+                          color=C_WARN)
             return
 
         mapping: dict[str, list[str]] = {}
         for row in _match_state["rows"]:
-            val = row["dropdown"].value
-            if val and val != "(none)":
-                mapping[row["stem"]] = [val]
+            vals = [d.value for d in row["slide_dropdowns"]
+                    if d.value and d.value != "(none)"]
+            if vals:
+                mapping[row["stem"]] = vals
 
-        # Save mapping JSON (even if empty — records user's choice to auto-detect all)
+        # Save mapping
         mapping_file = base / "alignment" / "video_slide_mapping.json"
         mapping_file.parent.mkdir(parents=True, exist_ok=True)
         with open(mapping_file, "w") as f:
             json.dump(mapping, f, indent=2)
-
-        n_mapped = len(mapping)
-        n_total  = len(_match_state["rows"])
 
         cmd = [PYTHON, str(SCRIPTS["align"]),
                "--course", cid,
@@ -1402,7 +1514,7 @@ def build_align(page: ft.Page, console: OutputConsole) -> ft.Column:
         console.run(cmd)
 
     def _run_auto(_) -> None:
-        """Run auto-align without any user mapping."""
+        """Run fully automatic alignment (no user mapping)."""
         cmd = [PYTHON, str(SCRIPTS["align"]), "--course", course_val["v"]]
         console.run(cmd)
 
@@ -1420,20 +1532,20 @@ def build_align(page: ft.Page, console: OutputConsole) -> ft.Column:
             ),
         ], spacing=8)),
 
-        # ── Video ↔ Slide Matching card ──────────────────────────────────────
         _card(ft.Column(controls=[
             ft.Row(controls=[
                 ft.Icon(ft.Icons.COMPARE_ARROWS, color=C_PRIMARY, size=18),
                 ft.Text("Video ↔ Slide Matching", size=14,
                         weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
             ], spacing=8),
-            ft.Text("Match each video recording to its lecture slides. "
-                    "Auto-suggested matches are pre-filled — adjust as needed. "
-                    "Videos left on 'auto-detect' will be matched by content similarity.",
+            ft.Text("Match each video to its lecture slides. "
+                    "Auto-suggested matches are pre-filled. "
+                    "Click + to add multiple slide files for one video, "
+                    "or × to exclude a video.",
                     size=12, color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE)),
-            ft.Container(height=4),
+            ft.Container(height=6),
 
-            # Course selector + Scan button
+            # Course selector + Scan
             ft.Row(controls=[
                 ft.Column(controls=[_label("Course"), course_dd],
                           spacing=6, expand=True),
@@ -1443,7 +1555,7 @@ def build_align(page: ft.Page, console: OutputConsole) -> ft.Column:
             match_status,
             ft.Container(height=4),
 
-            # Matching rows (populated by _scan_matching)
+            # Video rows
             match_rows_col,
 
             # Action buttons
