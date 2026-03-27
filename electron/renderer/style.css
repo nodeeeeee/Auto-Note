@@ -280,6 +280,16 @@ input, select, textarea { font: inherit; }
 .btn-outline:hover { background: rgba(77,208,225,0.08); }
 .btn-outline:disabled { opacity: 0.4; cursor: not-allowed; }
 
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; min-width: 24px;
+  background: transparent; border: none; border-radius: 4px;
+  color: inherit; font-size: 16px; font-weight: 600;
+  cursor: pointer; padding: 0;
+  transition: background var(--transition);
+}
+.icon-btn:hover { background: rgba(255,255,255,0.1); }
+
 .btn-secondary {
   display: inline-flex; align-items: center; gap: 6px;
   background: transparent;

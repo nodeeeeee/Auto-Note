@@ -1,6 +1,6 @@
 {
   "name": "auto-note",
-  "version": "0.9.13",
+  "version": "0.9.18",
   "description": "AutoNote — lecture notes generator from Canvas recordings",
   "homepage": "https://github.com/nodeeeeee/Auto-Note",
   "author": {
@@ -67,6 +67,10 @@
       {
         "from": "../extract_caption.py",
         "to": "scripts/extract_caption.py"
+      },
+      {
+        "from": "../frame_extractor.py",
+        "to": "scripts/frame_extractor.py"
       },
       {
         "from": "../semantic_alignment.py",

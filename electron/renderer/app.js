@@ -631,47 +631,141 @@ async function fillTranscribeInfo() {
 }
 
 // ── Page: Align ────────────────────────────────────────────────────────────────
+
+// Align page state
+const AlignState = { rows: [], slideOptions: [], courseId: '' };
+
 function buildAlign() {
   return `
     ${sectionTitle('Align Transcripts to Slides', '')}
     <div id="align-info-card"></div>
     ${mkCard(`
-      <div class="card-title">Auto-discover (whole course)</div>
-      <div class="card-sub">Pairs all unaligned captions with matching slide files.</div>
-      <div class="row">
+      <div class="card-title" style="display:flex;align-items:center;gap:8px">
+        ${I.link} Video ↔ Slide Matching
+      </div>
+      <div class="card-sub">
+        Match each video to its lecture slides. Auto-suggested matches are pre-filled.
+        Click <strong>+</strong> to add multiple slide files, or <strong>×</strong> to exclude a video.
+      </div>
+      <div class="row" style="margin-top:8px">
         <div class="col expand">
           <span class="label">Course</span>
           <select id="align-course" class="select-ctrl">${courseOptions()}</select>
         </div>
-        <div class="col expand">
-          <span class="label">Output directory (blank = auto)</span>
-          <input id="align-outdir" class="input-text" type="text" placeholder="blank = [course]/alignment/">
-        </div>
+        <button class="btn-primary" id="align-scan-btn">${I.search || '🔍'} Scan videos &amp; slides</button>
       </div>
-      <div class="row" style="margin-top:8px">
-        <button class="btn-primary" id="align-auto-btn">${I.play} Run auto-align</button>
-      </div>
-    `)}
-    ${mkCard(`
-      <div class="card-title">Manual (specific files)</div>
-      <div class="card-sub">Align one caption JSON to one or more slide files.</div>
-      <div class="field">
-        <label class="label">Caption JSON path</label>
-        <input id="align-caption" class="input-text" type="text">
-      </div>
-      <div class="field">
-        <label class="label">Slide file(s) (space-separated for multi-part)</label>
-        <input id="align-slides" class="input-text" type="text">
-      </div>
-      <div class="row end" style="margin-top:8px">
-        <div class="col expand">
-          <label class="label">Output directory (blank = auto)</label>
-          <input id="align-manual-out" class="input-text" type="text">
-        </div>
-        <button class="btn-primary" id="align-manual-btn">${I.play} Align</button>
+      <div id="align-match-status" style="font-size:11px;color:var(--c-white-45);margin:4px 0 6px 0"></div>
+      <div id="align-match-rows"></div>
+      <div class="row" style="margin-top:12px;gap:12px">
+        <button class="btn-primary" id="align-run-btn">${I.play} Align with mapping</button>
+        <button class="btn-outline" id="align-auto-btn">Auto-align (skip matching)</button>
       </div>
     `)}
   `;
+}
+
+function _alignSlideOptionsHtml(selected = '(none)') {
+  let html = '<option value="(none)">(none — auto-detect)</option>';
+  for (const s of AlignState.slideOptions) {
+    const sel = s.rel === selected ? ' selected' : '';
+    html += `<option value="${esc(s.rel)}"${sel}>${esc(s.rel)}</option>`;
+  }
+  return html;
+}
+
+function _alignAutoSuggest(capStem) {
+  // Simple heuristic: week number → lecture number, or token overlap
+  const capLower = capStem.toLowerCase().replace(/[-_]/g, ' ');
+  const weekMatch = capLower.match(/week\s*(\d+)/);
+  const lecMatch  = capLower.match(/lec(?:ture)?\s*(\d+)/);
+  const capNum    = weekMatch ? weekMatch[1] : (lecMatch ? lecMatch[1] : null);
+
+  let bestScore = 0, bestRel = '';
+  for (const s of AlignState.slideOptions) {
+    const sl = s.name.toLowerCase().replace(/[-_]/g, ' ');
+    // Lecture number match
+    const slNum = sl.match(/l(?:ecture)?\s*(\d+)/i);
+    if (capNum && slNum && capNum === slNum[1]) return s.rel;
+    // Token overlap
+    const capTokens = new Set(capLower.split(/\s+/));
+    const slTokens  = new Set(sl.split(/\s+/));
+    const inter = [...capTokens].filter(t => slTokens.has(t)).length;
+    const union = new Set([...capTokens, ...slTokens]).size;
+    const score = union ? inter / union : 0;
+    if (score > bestScore) { bestScore = score; bestRel = s.rel; }
+  }
+  return bestScore > 0.05 ? bestRel : '(none)';
+}
+
+function _alignRebuildRows() {
+  const container = document.getElementById('align-match-rows');
+  if (!container) return;
+
+  if (!AlignState.rows.length) { container.innerHTML = ''; return; }
+
+  let html = `<div style="display:flex;gap:6px;padding:2px 0;opacity:0.4;font-size:10px;font-weight:600">
+    <span style="width:28px"></span><span style="width:14px"></span>
+    <span style="width:220px">Video</span><span style="width:16px"></span>
+    <span style="flex:1">Lecture slides</span></div>`;
+
+  AlignState.rows.forEach((row, ri) => {
+    const statusIcon = row.aligned
+      ? '<span style="color:var(--c-success)" title="Already aligned">●</span>'
+      : '<span style="opacity:0.3" title="Not yet aligned">○</span>';
+
+    let slidesHtml = '';
+    row.slides.forEach((sel, si) => {
+      const actionBtn = si === 0
+        ? `<button class="icon-btn" title="Add slide file" data-action="add" data-row="${ri}">+</button>`
+        : `<button class="icon-btn" title="Remove" data-action="remove-slide" data-row="${ri}" data-slide="${si}" style="color:var(--c-error)">−</button>`;
+      slidesHtml += `<div style="display:flex;align-items:center;gap:2px;margin-bottom:2px">
+        <select class="select-ctrl" style="flex:1;font-size:11px" data-row="${ri}" data-slide="${si}">${_alignSlideOptionsHtml(sel)}</select>
+        ${actionBtn}</div>`;
+    });
+
+    html += `<div style="display:flex;align-items:flex-start;gap:6px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.06)">
+      <button class="icon-btn" title="Remove video" data-action="remove" data-row="${ri}" style="color:var(--c-error);font-size:14px">×</button>
+      <span style="width:14px;padding-top:4px">${statusIcon}</span>
+      <span style="width:220px;padding-top:4px;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(row.title)}">${esc(row.title)}</span>
+      <span style="padding-top:4px;opacity:0.3">→</span>
+      <div style="flex:1">${slidesHtml}</div>
+    </div>`;
+  });
+
+  container.innerHTML = html;
+
+  // Update status
+  const nMatched = AlignState.rows.filter(r => r.slides.some(s => s !== '(none)')).length;
+  const statusEl = document.getElementById('align-match-status');
+  if (statusEl) statusEl.textContent = `${AlignState.rows.length} video(s), ${AlignState.slideOptions.length} slide file(s). ${nMatched} matched.`;
+
+  // Bind events via delegation
+  container.onclick = (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const ri     = parseInt(btn.dataset.row);
+    if (action === 'remove') {
+      AlignState.rows.splice(ri, 1);
+      _alignRebuildRows();
+    } else if (action === 'add') {
+      AlignState.rows[ri].slides.push('(none)');
+      _alignRebuildRows();
+    } else if (action === 'remove-slide') {
+      const si = parseInt(btn.dataset.slide);
+      if (AlignState.rows[ri].slides.length > 1) {
+        AlignState.rows[ri].slides.splice(si, 1);
+        _alignRebuildRows();
+      }
+    }
+  };
+  container.onchange = (e) => {
+    const sel = e.target.closest('select[data-row]');
+    if (!sel) return;
+    const ri = parseInt(sel.dataset.row);
+    const si = parseInt(sel.dataset.slide);
+    AlignState.rows[ri].slides[si] = sel.value;
+  };
 }
 
 async function fillAlignInfo() {
@@ -682,8 +776,7 @@ async function fillAlignInfo() {
   const el = document.getElementById('align-info-card');
   if (el) {
     el.innerHTML = mkCard(`<div class="info-row">${I.info}
-      <span>Embed model: <strong>${esc(model)}</strong>   Context: ±<strong>${esc(ctx)}s</strong>
-      — Three-strategy matching: lecture number → token overlap → content embedding.</span></div>`);
+      <span>Embed: <strong>${esc(model)}</strong>   Context: ±<strong>${esc(ctx)}s</strong></span></div>`);
   }
 }
 
@@ -1356,26 +1449,64 @@ async function attachPageHandlers() {
   // ── Align ─────────────────────────────────────────────────────────────────────
   if (pg === 4) {
     fillAlignInfo();
+
+    // Scan button — populate the matching rows
+    document.getElementById('align-scan-btn')?.addEventListener('click', async () => {
+      const cid = document.getElementById('align-course')?.value;
+      if (!cid) { snack('Select a course first.', false); return; }
+      AlignState.courseId = cid;
+
+      const data = await window.api.alignScan(cid);
+      AlignState.slideOptions = data.slides;
+
+      AlignState.rows = data.captions.map(cap => {
+        // Determine title
+        const title = data.titles[cap.stem] || cap.stem;
+        // Pick initial slides: existing mapping > auto-suggest
+        let initSlides;
+        if (data.mapping[cap.stem] && data.mapping[cap.stem].length) {
+          initSlides = data.mapping[cap.stem];
+        } else {
+          const suggested = _alignAutoSuggest(cap.stem);
+          initSlides = suggested !== '(none)' ? [suggested] : ['(none)'];
+        }
+        return { stem: cap.stem, title, aligned: cap.aligned, slides: initSlides };
+      });
+
+      _alignRebuildRows();
+      snack(`Found ${data.captions.length} video(s), ${data.slides.length} slide file(s).`);
+    });
+
+    // Align with mapping button
+    document.getElementById('align-run-btn')?.addEventListener('click', async () => {
+      const cid = AlignState.courseId || document.getElementById('align-course')?.value;
+      if (!cid) { snack('Select a course first.', false); return; }
+      if (!AlignState.rows.length) { snack('Click "Scan" first.', false); return; }
+
+      // Build mapping from current state
+      const mapping = {};
+      for (const row of AlignState.rows) {
+        const vals = row.slides.filter(s => s && s !== '(none)');
+        if (vals.length) mapping[row.stem] = vals;
+      }
+
+      // Save mapping
+      const mapFile = await window.api.alignSaveMapping(cid, mapping);
+
+      const python = await window.api.getPythonPath();
+      const paths  = await window.api.getScriptsPaths();
+      const cmd = [python, paths.align, '--course', cid, '--mapping', mapFile];
+      runCmd(cmd, 'align --course ' + cid + ' --mapping …');
+    });
+
+    // Auto-align (skip matching) button
     document.getElementById('align-auto-btn')?.addEventListener('click', async () => {
-      const cid    = document.getElementById('align-course')?.value;
+      const cid = document.getElementById('align-course')?.value;
       if (!cid) { snack('Select a course first.', false); return; }
       const python = await window.api.getPythonPath();
       const paths  = await window.api.getScriptsPaths();
-      const outDir = document.getElementById('align-outdir')?.value.trim();
       const cmd = [python, paths.align, '--course', cid];
-      if (outDir) cmd.push('--out', outDir);
-      runCmd(cmd, 'semantic_alignment.py --course ' + cid);
-    });
-    document.getElementById('align-manual-btn')?.addEventListener('click', async () => {
-      const caption = document.getElementById('align-caption')?.value.trim();
-      const slides  = document.getElementById('align-slides')?.value.trim();
-      if (!caption || !slides) { snack('Caption and slide path(s) are required.', false); return; }
-      const python  = await window.api.getPythonPath();
-      const paths   = await window.api.getScriptsPaths();
-      const outDir  = document.getElementById('align-manual-out')?.value.trim();
-      const cmd = [python, paths.align, '--caption', caption, '--slides', ...slides.split(/\s+/)];
-      if (outDir) cmd.push('--out', outDir);
-      runCmd(cmd, 'semantic_alignment.py --caption …');
+      runCmd(cmd, 'align --course ' + cid);
     });
     return;
   }

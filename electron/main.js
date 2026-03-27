@@ -58,10 +58,11 @@ function scriptPath(name) {
 }
 
 const SCRIPTS = {
-  downloader: scriptPath('downloader.py'),
-  transcribe: scriptPath('extract_caption.py'),
-  align:      scriptPath('semantic_alignment.py'),
-  generate:   scriptPath('note_generation.py'),
+  downloader:      scriptPath('downloader.py'),
+  transcribe:      scriptPath('extract_caption.py'),
+  frame_extractor: scriptPath('frame_extractor.py'),
+  align:           scriptPath('semantic_alignment.py'),
+  generate:        scriptPath('note_generation.py'),
 };
 
 const ML_PACKAGES = [
@@ -780,6 +781,77 @@ function registerIpc() {
   ipcMain.handle('path:outputDir',      ()       => getOutputDir());
   ipcMain.handle('path:dataDir',        ()       => DATA_DIR);
   ipcMain.handle('course:listLectures', (_, cid) => discoverLectures(cid));
+
+  // ── Align: scan captions + slides, load/save mapping ───────────────────
+  ipcMain.handle('align:scan', (_, cid) => {
+    const outDir    = getOutputDir();
+    const base      = path.join(outDir, String(cid));
+    const capDir    = path.join(base, 'captions');
+    const matDir    = path.join(base, 'materials');
+    const alignDir  = path.join(base, 'alignment');
+    const exts      = new Set(['.pdf', '.pptx', '.ppt', '.docx', '.doc']);
+
+    // Captions
+    let captions = [];
+    if (fs.existsSync(capDir)) {
+      captions = fs.readdirSync(capDir)
+        .filter(f => f.endsWith('.json'))
+        .sort()
+        .map(f => {
+          const stem = f.replace(/\.json$/, '');
+          const aligned = fs.existsSync(path.join(alignDir, f));
+          return { stem, filename: f, aligned };
+        });
+    }
+
+    // Slides (recursive)
+    const slides = [];
+    function walkDir(dir, rel) {
+      if (!fs.existsSync(dir)) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          walkDir(path.join(dir, entry.name), rel ? rel + '/' + entry.name : entry.name);
+        } else if (exts.has(path.extname(entry.name).toLowerCase()) && !entry.name.includes('image_cache')) {
+          const relPath = rel ? 'materials/' + rel + '/' + entry.name : 'materials/' + entry.name;
+          slides.push({ name: entry.name, rel: relPath });
+        }
+      }
+    }
+    walkDir(matDir, '');
+
+    // Video titles from manifest
+    const titles = {};
+    const mf = path.join(DATA_DIR, 'manifest.json');
+    if (fs.existsSync(mf)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(mf, 'utf8'));
+        for (const [, entry] of Object.entries(manifest)) {
+          if (entry.status === 'done' && entry.title) {
+            const sanitized = entry.title.replace(/[\\/*?:"<>|]/g, '_');
+            titles[sanitized] = entry.title;
+          }
+        }
+      } catch {}
+    }
+
+    // Existing mapping
+    let mapping = {};
+    const mapFile = path.join(alignDir, 'video_slide_mapping.json');
+    if (fs.existsSync(mapFile)) {
+      try { mapping = JSON.parse(fs.readFileSync(mapFile, 'utf8')); } catch {}
+    }
+
+    return { captions, slides, titles, mapping, base };
+  });
+
+  ipcMain.handle('align:saveMapping', (_, { cid, mapping }) => {
+    const outDir   = getOutputDir();
+    const alignDir = path.join(outDir, String(cid), 'alignment');
+    if (!fs.existsSync(alignDir)) fs.mkdirSync(alignDir, { recursive: true });
+    const mapFile  = path.join(alignDir, 'video_slide_mapping.json');
+    fs.writeFileSync(mapFile, JSON.stringify(mapping, null, 2));
+    return mapFile;
+  });
 
   // ── Uninstaller ──────────────────────────────────────────────────────────
   ipcMain.handle('uninstall:sizes', async () => {
