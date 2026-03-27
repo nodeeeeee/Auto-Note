@@ -102,6 +102,62 @@ def _canvas_headers() -> dict:
     return {"Authorization": f"Bearer {CANVAS_TOKEN}"}
 
 
+_playwright_checked = False
+
+def _ensure_playwright_browsers() -> None:
+    """Auto-install Chromium browser for Playwright if not already present.
+
+    Called once per process — checks if the Chromium binary exists, and
+    if not, runs `playwright install chromium` automatically so the user
+    never has to do it themselves.
+    """
+    global _playwright_checked
+    if _playwright_checked:
+        return
+    _playwright_checked = True
+
+    try:
+        from playwright._impl._driver import compute_driver_executable
+        driver_exec = compute_driver_executable()
+        import subprocess as _sp
+        result = _sp.run(
+            [str(driver_exec), "install", "--dry-run", "chromium"],
+            capture_output=True, text=True, timeout=10,
+        )
+        # If dry-run succeeds without mentioning "not installed", we're good
+        if result.returncode == 0:
+            return
+    except Exception:
+        pass
+
+    # Check by actually trying to find the executable path
+    try:
+        from playwright.sync_api import sync_playwright as _sp_check
+        with _sp_check() as p:
+            p.chromium.executable_path  # noqa: B018
+        return  # browser exists
+    except Exception:
+        pass
+
+    # Browser not found — install it
+    tqdm.write("  [playwright] Chromium not found — installing automatically…")
+    import subprocess as _sp
+    try:
+        proc = _sp.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True, text=True, timeout=300,
+        )
+        if proc.returncode == 0:
+            tqdm.write("  [playwright] Chromium installed successfully.")
+        else:
+            tqdm.write(f"  [playwright] Install exited with code {proc.returncode}")
+            if proc.stderr:
+                tqdm.write(f"  [playwright] {proc.stderr.strip()[:200]}")
+    except Exception as e:
+        tqdm.write(f"  [playwright] Auto-install failed: {e}")
+        tqdm.write("  [playwright] Run manually: python -m playwright install chromium")
+
+
 def _is_academic(course) -> bool:
     try:
         name = course.name.lower()
@@ -259,6 +315,7 @@ def _get_panopto_tab_folder(course_id: int) -> tuple[str | None, list[dict], str
     Returns (folder_id, panopto_cookies, bearer_token).
     """
     global PANOPTO_HOST  # may be auto-detected from Playwright request URLs
+    _ensure_playwright_browsers()
     from playwright.sync_api import sync_playwright
 
     r = requests.get(
@@ -550,6 +607,7 @@ def _get_sessionless_launch_url(course_id: int, item_id: int) -> str | None:
 
 
 def _get_panopto_session(launch_url: str) -> tuple[str | None, list[dict]]:
+    _ensure_playwright_browsers()
     from playwright.sync_api import sync_playwright
     session_id, cookies = None, []
     with sync_playwright() as p:
@@ -667,6 +725,7 @@ def _get_stream_url(
     if not launch_url:
         return None
 
+    _ensure_playwright_browsers()
     from playwright.sync_api import sync_playwright
 
     viewer_page_url = f"https://{PANOPTO_HOST}/Panopto/Pages/Viewer.aspx?id={session_id}"
