@@ -65,14 +65,42 @@ const SCRIPTS = {
   generate:        scriptPath('note_generation.py'),
 };
 
-const ML_PACKAGES = [
-  'tqdm', 'faster-whisper', 'sentence-transformers', 'faiss-cpu',
-  'pymupdf', 'python-pptx', 'python-docx', 'openai', 'anthropic',
-  'google-generativeai', 'requests', 'pillow', 'httpx', 'playwright',
-  'canvasapi', 'ffmpeg-progress-yield', 'pycryptodomex',
-  // yarl installed separately (modern wheel) before PanoptoDownloader
-  'yarl',
-];
+// ML packages split into components the user can opt in/out of.
+// "core" is always installed; the rest are optional (default: all on).
+const ML_COMPONENTS = {
+  core: {
+    label: 'Core (required)',
+    packages: ['tqdm', 'requests', 'pillow', 'httpx', 'openai', 'anthropic',
+               'google-generativeai', 'canvasapi', 'pymupdf', 'python-pptx',
+               'python-docx', 'ffmpeg-progress-yield', 'pycryptodomex', 'yarl'],
+    required: true,
+  },
+  whisper: {
+    label: 'Local transcription (faster-whisper + GPU)',
+    packages: ['faster-whisper'],
+    required: false,
+  },
+  embeddings: {
+    label: 'Local embeddings (sentence-transformers + FAISS)',
+    packages: ['sentence-transformers', 'faiss-cpu'],
+    required: false,
+  },
+  bge_m3: {
+    label: 'BGE-M3 model (download ~2 GB on first use)',
+    packages: [],   // model is downloaded by sentence-transformers at runtime
+    required: false,
+    note: 'Requires "Local embeddings" above',
+  },
+  panopto: {
+    label: 'Panopto video download (Playwright browser)',
+    packages: [],   // playwright is installed; browser downloaded separately
+    required: false,
+  },
+};
+
+// Flatten for backward compat — used when no component selection is given
+const ML_PACKAGES = Object.values(ML_COMPONENTS)
+  .flatMap(c => c.packages);
 // PanoptoDownloader requires yarl~=1.7.2 in its metadata, but works fine with
 // modern yarl at runtime.  Installing with --no-deps avoids the C++ build for
 // the old yarl on Windows where no pre-built wheel exists for Python 3.12+.
@@ -499,7 +527,7 @@ function stopProcess() {
 }
 
 // ── ML environment installer ──────────────────────────────────────────────────
-async function runInstaller(basePython, sendLog, sendDone) {
+async function runInstaller(basePython, sendLog, sendDone, selectedComponents = null) {
   const venvDir = path.join(DATA_DIR, 'venv');
 
   // Build a clean environment for installer subprocesses.
@@ -570,56 +598,83 @@ async function runInstaller(basePython, sendLog, sendDone) {
   sendLog('► Upgrading pip…\n');
   await runStep(pip, ['install', '--upgrade', 'pip']);
 
-  // Step 3 — detect CUDA and install torch
-  const cuda   = detectCuda();
-  const idxUrl = torchIndexUrl(cuda);
-  if (cuda && idxUrl) {
-    sendLog(`► CUDA ${cuda[0]}.${cuda[1]} detected — installing torch (GPU)…\n`);
-  } else if (cuda) {
-    sendLog(`► CUDA ${cuda[0]}.${cuda[1]} detected but too old for GPU torch — installing CPU build…\n`);
+  // Determine which components to install
+  const sel = selectedComponents || Object.keys(ML_COMPONENTS);
+  const needsTorch = sel.includes('whisper') || sel.includes('embeddings');
+  sendLog(`► Components: ${sel.join(', ')}\n`);
+
+  // Step 3 — detect CUDA and install torch (only if needed)
+  if (needsTorch) {
+    const cuda   = detectCuda();
+    const idxUrl = torchIndexUrl(cuda);
+    if (cuda && idxUrl) {
+      sendLog(`► CUDA ${cuda[0]}.${cuda[1]} detected — installing torch (GPU)…\n`);
+    } else if (cuda) {
+      sendLog(`► CUDA ${cuda[0]}.${cuda[1]} detected but too old for GPU torch — installing CPU build…\n`);
+    } else {
+      sendLog('► No GPU detected — installing torch (CPU)…\n');
+    }
+    const torchArgs = idxUrl
+      ? ['install', 'torch', '--index-url', idxUrl]
+      : ['install', 'torch'];
+    let torchCode = await runStep(pip, torchArgs);
+    if (torchCode !== 0 && idxUrl) {
+      sendLog('WARNING: GPU torch install failed — retrying with CPU-only build…\n');
+      torchCode = await runStep(pip, ['install', 'torch']);
+    }
+    if (torchCode !== 0) {
+      sendLog('ERROR: torch installation failed (see log above).\n');
+      sendDone({ success: false, error: 'torch install failed' });
+      return;
+    }
   } else {
-    sendLog('► No GPU detected — installing torch (CPU)…\n');
-  }
-  const torchArgs = idxUrl
-    ? ['install', 'torch', '--index-url', idxUrl]
-    : ['install', 'torch'];
-  let torchCode = await runStep(pip, torchArgs);
-  if (torchCode !== 0 && idxUrl) {
-    // GPU wheel failed (e.g. incompatible GLIBC) — retry with plain CPU build
-    sendLog('WARNING: GPU torch install failed — retrying with CPU-only build…\n');
-    torchCode = await runStep(pip, ['install', 'torch']);
-  }
-  if (torchCode !== 0) {
-    sendLog('ERROR: torch installation failed (see log above).\n');
-    sendDone({ success: false, error: 'torch install failed' });
-    return;
+    sendLog('► Skipping torch (no local ML components selected).\n');
   }
 
-  // Step 4 — install ML packages
-  sendLog('► Installing ML packages…\n');
-  const mlCode = await runStep(pip, ['install', ...ML_PACKAGES]);
+  // Step 4 — install selected packages
+  const packages = [];
+  for (const key of sel) {
+    const comp = ML_COMPONENTS[key];
+    if (comp && comp.packages.length) packages.push(...comp.packages);
+  }
+  // Always include core
+  if (!sel.includes('core')) packages.push(...ML_COMPONENTS.core.packages);
+
+  sendLog(`► Installing ${packages.length} package(s)…\n`);
+  const mlCode = await runStep(pip, ['install', ...packages]);
   if (mlCode !== 0) {
     sendLog('ERROR: ML packages installation failed (see log above).\n');
     sendDone({ success: false, error: 'ML packages install failed' });
     return;
   }
 
-  // Step 4b — install PanoptoDownloader without deps (avoids yarl~=1.7.2 C++ build on Windows)
-  sendLog('► Installing PanoptoDownloader (--no-deps)…\n');
-  const panoptoCode = await runStep(pip, ['install', '--no-deps', PANOPTO_PKG]);
-  if (panoptoCode !== 0) {
-    sendLog('ERROR: PanoptoDownloader installation failed (see log above).\n');
-    sendDone({ success: false, error: 'PanoptoDownloader install failed' });
-    return;
+  // Step 4b — install PanoptoDownloader (only if panopto component selected)
+  if (sel.includes('panopto')) {
+    sendLog('► Installing Playwright + PanoptoDownloader…\n');
+    await runStep(pip, ['install', 'playwright']);
+    const panoptoCode = await runStep(pip, ['install', '--no-deps', PANOPTO_PKG]);
+    if (panoptoCode !== 0) {
+      sendLog('WARNING: PanoptoDownloader install failed — video download may not work.\n');
+    }
+    // Step 5 — playwright browsers
+    sendLog('► Installing Playwright browsers…\n');
+    const playwrightCode = await runStep(VENV_PYTHON, ['-m', 'playwright', 'install', 'chromium']);
+    if (playwrightCode !== 0) {
+      sendLog('WARNING: Playwright browser install failed — video download may not work.\n');
+      sendLog('  You can retry from Settings → ML Environment.\n');
+    }
+  } else {
+    sendLog('► Skipping Panopto/Playwright (not selected).\n');
   }
 
-  // Step 5 — playwright browsers
-  sendLog('► Installing Playwright browsers…\n');
-  const playwrightCode = await runStep(VENV_PYTHON, ['-m', 'playwright', 'install', 'chromium']);
-  if (playwrightCode !== 0) {
-    sendLog('WARNING: Playwright browser install failed — video download may not work.\n');
-    sendLog('  You can retry from Settings → ML Environment.\n');
-    // Non-fatal: other features still work without playwright
+  // Step 5b — pre-download BGE-M3 model if selected
+  if (sel.includes('bge_m3') && sel.includes('embeddings')) {
+    sendLog('► Pre-downloading BGE-M3 model (~2 GB)…\n');
+    const dlCode = await runStep(VENV_PYTHON, ['-c',
+      "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"]);
+    if (dlCode !== 0) {
+      sendLog('WARNING: BGE-M3 download failed — it will download on first use.\n');
+    }
   }
 
   sendLog('\n✓ ML environment ready. You can now run the pipeline.\n');
@@ -761,12 +816,16 @@ function registerIpc() {
   ipcMain.handle('process:run',     (_, { cmd }) => runProcess(cmd));
   ipcMain.on(    'process:stop',    ()           => stopProcess());
 
-  ipcMain.handle('install:start', async (_, { basePython }) => {
+  // Expose component definitions to renderer
+  ipcMain.handle('install:components', () => ML_COMPONENTS);
+
+  ipcMain.handle('install:start', async (_, { basePython, components }) => {
     if (installProc) return { error: 'Installer already running.' };
     runInstaller(
       basePython || null,
       (text)   => mainWindow?.webContents.send('install:data', text),
       (result) => mainWindow?.webContents.send('install:done', result),
+      components || null,  // null = install all
     );
     return { ok: true };
   });

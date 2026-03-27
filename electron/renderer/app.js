@@ -938,12 +938,14 @@ function buildSettingsKeys() {
 function buildSettingsEnv() {
   return mkCard(`
     <div class="card-title">ML Environment</div>
-    <div class="card-sub">Creates ~/.auto_note/venv/ with torch, faster-whisper, sentence-transformers, …</div>
+    <div class="card-sub">Creates ~/.auto_note/venv/ — select which components to install.
+      Without local ML, the app uses online APIs (requires API keys).</div>
     <div class="row center" style="gap:8px;margin-bottom:8px">
       <span style="font-size:11px;color:var(--c-white-45)">Status:</span>
       <span id="env-status" style="font-size:11px"></span>
     </div>
-    <div class="row" style="margin-bottom:8px">
+    <div id="env-components" style="margin-bottom:10px"><!-- filled async --></div>
+    <div class="row" style="margin-bottom:8px;gap:8px">
       <button class="btn-secondary" id="env-install-btn">⬇ Install ML Environment</button>
       <button class="btn-outline" id="env-reinstall-btn" style="display:none">↺ Reinstall</button>
     </div>
@@ -953,6 +955,24 @@ function buildSettingsEnv() {
     </div>
     <textarea id="env-log" class="install-log" readonly style="display:none"></textarea>
   `);
+}
+
+async function fillEnvComponents() {
+  const comps = await window.api.getInstallComponents();
+  const el = document.getElementById('env-components');
+  if (!el || !comps) return;
+  let html = '';
+  for (const [key, def] of Object.entries(comps)) {
+    const checked = 'checked';
+    const disabled = def.required ? 'disabled' : '';
+    const note = def.note ? ` <span style="color:var(--c-white-35);font-size:10px">(${def.note})</span>` : '';
+    html += `<label style="display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer;font-size:12px;color:var(--c-white-70)">
+      <input type="checkbox" class="env-comp-cb" data-comp="${esc(key)}" ${checked} ${disabled}
+        style="accent-color:var(--c-primary)">
+      ${esc(def.label)}${note}
+    </label>`;
+  }
+  el.innerHTML = html;
 }
 
 const CONSTANTS_DEF = [
@@ -1593,6 +1613,7 @@ async function attachPageHandlers() {
   // ── Settings ──────────────────────────────────────────────────────────────────
   if (pg === 6) {
     loadSettingsData();
+    fillEnvComponents();
 
     document.getElementById('cfg-browse-btn')?.addEventListener('click', async () => {
       const dir = await window.api.openDirDialog();
@@ -1701,7 +1722,12 @@ async function attachPageHandlers() {
         }
       });
 
-      await window.api.startInstall(manualPy);
+      // Gather selected components from checkboxes
+      const compCbs = document.querySelectorAll('.env-comp-cb');
+      const selComps = [];
+      compCbs.forEach(cb => { if (cb.checked) selComps.push(cb.dataset.comp); });
+
+      await window.api.startInstall(manualPy, selComps.length ? selComps : null);
     };
 
     document.getElementById('env-install-btn')?.addEventListener('click', startInstall);

@@ -36,7 +36,8 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   // ── ML environment installer ──────────────────────────────────────────────
-  startInstall:   (basePython) => ipcRenderer.invoke('install:start', { basePython }),
+  getInstallComponents: () => ipcRenderer.invoke('install:components'),
+  startInstall:   (basePython, components) => ipcRenderer.invoke('install:start', { basePython, components }),
   stopInstall:    ()     => ipcRenderer.send('install:stop'),
   onInstallData:  (cb)   => ipcRenderer.on('install:data', (_, text) => cb(text)),
   onInstallDone:  (cb)   => ipcRenderer.on('install:done', (_, info) => cb(info)),
