@@ -179,6 +179,48 @@ def _save_json(path: Path, data: dict) -> None:
         json.dump(data, f, indent=2)
 
 
+# ── Concurrent transcription helper ───────────────────────────────────────────
+
+_transcribe_procs: list[subprocess.Popen] = []
+
+
+def _spawn_transcribe(video_path: str) -> None:
+    """Spawn transcription for a video in the background.
+
+    Runs extract_caption.py --video <path> as a subprocess.
+    The download loop continues immediately without waiting.
+    """
+    script = PROJECT_DIR / "extract_caption.py"
+    # Also check installed scripts dir
+    installed = Path.home() / ".auto_note" / "scripts" / "extract_caption.py"
+    if installed.exists():
+        script = installed
+
+    cmd = [sys.executable, str(script), "--video", video_path]
+    tqdm.write(f"  [transcribe] Starting background transcription: {Path(video_path).name}")
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        env={**os.environ, "AUTONOTE_DATA_DIR": str(DATA_DIR)},
+    )
+    _transcribe_procs.append(proc)
+
+
+def _wait_transcriptions() -> None:
+    """Wait for all background transcription processes to finish."""
+    if not _transcribe_procs:
+        return
+    tqdm.write(f"\n  Waiting for {len(_transcribe_procs)} background transcription(s) to finish...")
+    for proc in _transcribe_procs:
+        for line in proc.stdout:
+            tqdm.write(f"  [transcribe] {line.rstrip()}")
+        proc.wait()
+        if proc.returncode == 0:
+            tqdm.write(f"  [transcribe] Done (exit 0)")
+        else:
+            tqdm.write(f"  [transcribe] Failed (exit {proc.returncode})")
+    _transcribe_procs.clear()
+
+
 def _secretly_wait_video() -> None:
     delay = random.uniform(_SECRETLY_VIDEO_MIN, _SECRETLY_VIDEO_MAX)
     mins  = delay / 60
@@ -1275,6 +1317,13 @@ def main() -> None:
         help="Download all pending materials (combine with --course to filter)",
     )
 
+    # ── Pipeline options ──────────────────────────────────────────────────────
+    parser.add_argument(
+        "--transcribe", action="store_true",
+        help="Auto-transcribe each video right after it downloads "
+             "(runs concurrently: next download + previous transcription overlap)",
+    )
+
     args = parser.parse_args()
 
     # At least one action required
@@ -1339,9 +1388,13 @@ def main() -> None:
             print(f"\n[{i+1}/{len(targets)}] {video['title']}")
             result = download_video(video, manifest, base_dir)
             _save_json(MANIFEST_FILE, manifest)
+            if args.transcribe and result is True:
+                _spawn_transcribe(manifest[str(video["item_id"])]["path"])
             if args.secretly and result is True and i < len(targets) - 1:
                 _secretly_wait_video()
 
+        if args.transcribe:
+            _wait_transcriptions()
         print(f"\nDone.")
         return
 
@@ -1360,9 +1413,13 @@ def main() -> None:
             print(f"\n[{i+1}/{len(pending)}] {video['title']}")
             result = download_video(video, manifest, base_dir)
             _save_json(MANIFEST_FILE, manifest)
+            if args.transcribe and result is True:
+                _spawn_transcribe(manifest[str(video["item_id"])]["path"])
             if args.secretly and result is True and i < len(pending) - 1:
                 _secretly_wait_video()
 
+        if args.transcribe:
+            _wait_transcriptions()
         print(f"\nDone.")
         return
 

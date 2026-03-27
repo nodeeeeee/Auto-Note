@@ -1411,20 +1411,14 @@ async function attachPageHandlers() {
       const { base } = await getArgs(); runCmd([...base, '--video-list'], '--video-list');
     });
     document.getElementById('dl-vid-all')?.addEventListener('click', async () => {
-      const { base, python, paths } = await getArgs();
-      runChain([
-        ['Download videos', [...base, '--download-video-all']],
-        ['Transcribe', [python, paths.transcribe]],
-      ]);
+      const { base } = await getArgs();
+      runCmd([...base, '--download-video-all', '--transcribe'], '--download-video-all --transcribe');
     });
     document.getElementById('dl-vid-sel')?.addEventListener('click', async () => {
       const nums = document.getElementById('dl-vid-nums')?.value.trim().split(/\s+/).filter(Boolean);
       if (!nums?.length) { snack('Enter video number(s) first.', false); return; }
-      const { base, python, paths } = await getArgs();
-      runChain([
-        ['Download videos', [...base, '--download-video', ...nums]],
-        ['Transcribe', [python, paths.transcribe]],
-      ]);
+      const { base } = await getArgs();
+      runCmd([...base, '--download-video', ...nums, '--transcribe'], '--download-video --transcribe');
     });
     document.getElementById('dl-mat-list')?.addEventListener('click', async () => {
       const { base } = await getArgs(); runCmd([...base, '--material-list'], '--material-list');
