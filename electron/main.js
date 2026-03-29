@@ -997,7 +997,41 @@ function registerIpc() {
     const python = getPythonPath();
     const script = SCRIPTS.align;
     const outDir = getOutputDir();
-    console.log(`[align:suggestMatches] python=${python} script=${script} course=${cid} model=${model} outDir=${outDir}`);
+    const courseDir = path.join(outDir, String(cid));
+
+    // Pre-flight diagnostics
+    const diag = [];
+    diag.push(`Python: ${python} (exists: ${fs.existsSync(python)})`);
+    diag.push(`Script: ${script} (exists: ${fs.existsSync(script)})`);
+    diag.push(`DATA_DIR: ${DATA_DIR}`);
+    diag.push(`OutputDir: ${outDir}`);
+    diag.push(`CourseDir: ${courseDir} (exists: ${fs.existsSync(courseDir)})`);
+    diag.push(`Captions: ${fs.existsSync(path.join(courseDir, 'captions'))}`);
+    diag.push(`Materials: ${fs.existsSync(path.join(courseDir, 'materials'))}`);
+    console.log(`[align:suggestMatches] ${diag.join(' | ')}`);
+
+    // Quick pre-check: can this Python import the needed packages?
+    const checkCode = "import sys; " +
+      "errs=[]; " +
+      "[errs.append(n) for n in ['numpy','fitz','sentence_transformers'] if not __import__('importlib').util.find_spec(n)]; " +
+      "print('MISSING:'+','.join(errs) if errs else 'OK'); " +
+      "print('PYTHON:'+sys.executable); " +
+      "print('PREFIX:'+sys.prefix)";
+    const chk = spawnSync(python, ['-c', checkCode], {
+      encoding: 'utf8', timeout: 10000,
+      env: { ...process.env, AUTONOTE_DATA_DIR: DATA_DIR },
+    });
+    const chkOut = (chk.stdout || '') + (chk.stderr || '');
+    diag.push(`PreCheck: ${chkOut.replace(/\n/g, ' | ').trim()}`);
+    console.log(`[align:suggestMatches] precheck: ${chkOut.trim()}`);
+
+    if (chkOut.includes('MISSING:') && !chkOut.includes('MISSING:OK') && !chkOut.includes('MISSING:\n')) {
+      const missing = chkOut.match(/MISSING:(.+)/)?.[1]?.trim();
+      if (missing) {
+        resolve({ __error: `Python (${python}) is missing packages: ${missing}. Reinstall ML environment with these components enabled.` });
+        return;
+      }
+    }
 
     const cmd = [python, script, '--course', String(cid),
                  '--suggest-matches', '--match-model', model || 'bge-m3'];

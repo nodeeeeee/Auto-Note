@@ -1503,14 +1503,22 @@ async function attachPageHandlers() {
       const matches = await window.api.alignSuggestMatches(cid, model);
 
       if (matches?.__error) {
-        snack(`Smart match failed: ${matches.__error}`, false);
-        if (statusEl) statusEl.textContent = 'Smart match failed — see error above.';
+        // Show error in both snackbar and terminal for full diagnostics
+        Term.write(`\n✗ Smart match error:\n${matches.__error}\n`, 'err');
+        snack(`Smart match failed — see terminal for details.`, false);
+        if (statusEl) statusEl.textContent = 'Smart match failed — see terminal below.';
         return;
       }
 
       if (!matches || !Object.keys(matches).length) {
-        snack('Embedding matching returned no results — using heuristic suggestions.', false);
-        if (statusEl) statusEl.textContent = 'No embedding matches found.';
+        Term.write('\n✗ Smart match returned empty results.\n'
+          + 'Possible causes:\n'
+          + '  - pymupdf not installed (cannot read PDF slide text)\n'
+          + '  - sentence-transformers not installed (cannot embed text)\n'
+          + '  - No captions or materials found for this course\n'
+          + `  - Course dir: check if files exist under Output Dir / ${cid}\n`, 'warn');
+        snack('No embedding matches — see terminal for diagnostics.', false);
+        if (statusEl) statusEl.textContent = 'No matches — check terminal.';
         return;
       }
 
