@@ -57,7 +57,7 @@ _ng_config: dict = (
     if (DATA_DIR / "config.json").exists() else {}
 )
 _out_dir = _ng_config.get("OUTPUT_DIR", "").strip()
-COURSE_DATA_DIR = Path(_out_dir) if _out_dir else DATA_DIR
+COURSE_DATA_DIR = Path(_out_dir) if _out_dir else Path.home() / "AutoNote"
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 

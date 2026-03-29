@@ -68,7 +68,8 @@ try:
 except Exception:
     _sa_config = {}
 _out_dir = _sa_config.get("OUTPUT_DIR", "").strip()
-COURSE_DATA_DIR = Path(_out_dir) if _out_dir else DATA_DIR
+# Default to ~/AutoNote (same as the Electron app's getOutputDir())
+COURSE_DATA_DIR = Path(_out_dir) if _out_dir else Path.home() / "AutoNote"
 
 # ── Tunable knobs ─────────────────────────────────────────────────────────────
 

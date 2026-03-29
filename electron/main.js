@@ -843,16 +843,17 @@ function registerIpc() {
 
   // ── Align: scan captions + slides, load/save mapping ───────────────────
   ipcMain.handle('align:scan', (_, cid) => {
-    // Course data may be under OUTPUT_DIR or DATA_DIR (~/.auto_note/).
-    // Python uses COURSE_DATA_DIR = config.OUTPUT_DIR or DATA_DIR.
-    // Check all possible locations and use whichever has the captions/ dir.
+    // Course data lives under OUTPUT_DIR (~/AutoNote by default).
+    // Check OUTPUT_DIR first, then DATA_DIR as fallback.
     const candidates = [
-      path.join(DATA_DIR, String(cid)),
       path.join(getOutputDir(), String(cid)),
+      path.join(DATA_DIR, String(cid)),
     ];
-    let base = candidates[0];  // default to DATA_DIR
+    let base = candidates[0];  // default to OUTPUT_DIR
     for (const c of candidates) {
-      if (fs.existsSync(path.join(c, 'captions'))) { base = c; break; }
+      if (fs.existsSync(path.join(c, 'captions')) || fs.existsSync(path.join(c, 'materials'))) {
+        base = c; break;
+      }
     }
     const capDir    = path.join(base, 'captions');
     const matDir    = path.join(base, 'materials');
@@ -1112,12 +1113,14 @@ function registerIpc() {
 
   ipcMain.handle('align:saveMapping', (_, { cid, mapping }) => {
     const candidates = [
-      path.join(DATA_DIR, String(cid)),
       path.join(getOutputDir(), String(cid)),
+      path.join(DATA_DIR, String(cid)),
     ];
     let base = candidates[0];
     for (const c of candidates) {
-      if (fs.existsSync(path.join(c, 'captions'))) { base = c; break; }
+      if (fs.existsSync(path.join(c, 'captions')) || fs.existsSync(path.join(c, 'materials'))) {
+        base = c; break;
+      }
     }
     const alignDir = path.join(base, 'alignment');
     if (!fs.existsSync(alignDir)) fs.mkdirSync(alignDir, { recursive: true });

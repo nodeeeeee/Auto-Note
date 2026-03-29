@@ -38,7 +38,7 @@ else:
 _cfg_file = DATA_DIR / "config.json"
 _fe_config: dict = json.loads(_cfg_file.read_text(encoding="utf-8")) if _cfg_file.exists() else {}
 _out_dir = _fe_config.get("OUTPUT_DIR", "").strip()
-COURSE_DATA_DIR = Path(_out_dir) if _out_dir else DATA_DIR
+COURSE_DATA_DIR = Path(_out_dir) if _out_dir else Path.home() / "AutoNote"
 
 # Prevent console windows flashing on Windows
 _SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
