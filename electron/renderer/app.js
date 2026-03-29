@@ -1510,26 +1510,26 @@ async function attachPageHandlers() {
         return;
       }
 
-      if (!matches || !Object.keys(matches).length) {
-        Term.write('\n✗ Smart match returned empty results.\n'
-          + 'Possible causes:\n'
-          + '  - pymupdf not installed (cannot read PDF slide text)\n'
-          + '  - sentence-transformers not installed (cannot embed text)\n'
-          + '  - No captions or materials found for this course\n'
-          + `  - Course dir: check if files exist under Output Dir / ${cid}\n`, 'warn');
-        snack('No embedding matches — see terminal for diagnostics.', false);
-        if (statusEl) statusEl.textContent = 'No matches — check terminal.';
+      // Filter out internal keys
+      const log = matches?.__log || '';
+      const matchKeys = Object.keys(matches).filter(k => !k.startsWith('__'));
+
+      if (!matchKeys.length) {
+        Term.write(`\n✗ Smart match returned no results.\n\n── Script output ──\n${log || '(empty)'}\n`, 'warn');
+        snack('No embedding matches — see terminal for details.', false);
+        if (statusEl) statusEl.textContent = 'No matches — see terminal.';
         return;
       }
 
       // Apply embedding suggestions to rows
       let updated = 0;
       for (const row of AlignState.rows) {
-        if (matches[row.stem]) {
+        if (matches[row.stem] && !row.stem.startsWith('__')) {
           row.slides = [matches[row.stem]];
           updated++;
         }
       }
+      if (log) Term.write(`\n── Smart match log ──\n${log}\n`, 'cmd');
       _alignRebuildRows();
       snack(`Smart match: ${updated}/${AlignState.rows.length} video(s) matched via ${model}.`);
     });

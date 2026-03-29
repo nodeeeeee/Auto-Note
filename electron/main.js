@@ -1070,14 +1070,16 @@ function registerIpc() {
         const marker = '__MATCH_RESULT__';
         const idx = combined.indexOf(marker);
         if (idx < 0) {
-          console.error(`[align:suggestMatches] no marker:\n${combined.slice(-500)}`);
-          resolve({ __error: `No match results. Log: ${combined.slice(-300)}` });
+          resolve({ __error: combined.trim() || 'Script produced no output.' });
           return;
         }
         try {
-          resolve(JSON.parse(combined.slice(idx + marker.length).trim()));
+          const result = JSON.parse(combined.slice(idx + marker.length).trim());
+          // Attach the log so the UI can show it even on empty results
+          result.__log = combined.slice(0, idx).trim();
+          resolve(result);
         } catch (e) {
-          resolve({ __error: `JSON parse error: ${e.message}` });
+          resolve({ __error: `JSON parse error: ${e.message}\n\n${combined.trim()}` });
         }
       });
     });
