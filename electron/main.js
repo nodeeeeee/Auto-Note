@@ -1037,6 +1037,25 @@ function registerIpc() {
     // Run the actual matching script (synchronous — takes a few seconds)
     const args = [script, '--course', String(cid),
                   '--suggest-matches', '--match-model', model || 'bge-m3'];
+
+    // Check the script file actually has --suggest-matches (old versions don't)
+    try {
+      const scriptContent = fs.readFileSync(script, 'utf8');
+      if (!scriptContent.includes('suggest-matches')) {
+        diagLines.push(`Script OUTDATED: ${script} does not contain --suggest-matches`);
+        // Force-copy the latest script from bundled resources
+        if (process.resourcesPath) {
+          const bundled = path.join(process.resourcesPath, 'scripts', 'semantic_alignment.py');
+          if (fs.existsSync(bundled)) {
+            fs.copyFileSync(bundled, script);
+            diagLines.push('Copied latest script from AppImage resources.');
+          }
+        }
+      }
+    } catch (e) {
+      diagLines.push(`Cannot read script: ${e.message}`);
+    }
+
     diagLines.push(`Command: ${python} ${args.join(' ')}`);
     const diagStr2 = diagLines.join('\n');
 
@@ -1046,22 +1065,31 @@ function registerIpc() {
         encoding: 'utf8',
         timeout: 120000,  // 2 minutes max
         env: { ...process.env, AUTONOTE_DATA_DIR: DATA_DIR },
-        stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (e) {
       return { __error: `Failed to run: ${e.message}\n\n── Diagnostics ──\n${diagStr2}` };
     }
 
-    const combined = (result.stdout || '') + '\n' + (result.stderr || '');
+    // Full diagnostics from spawnSync
+    const stdout = result.stdout || '';
+    const stderr = result.stderr || '';
+    const combined = stdout + '\n' + stderr;
+    const spawnInfo = `status=${result.status}, signal=${result.signal}, error=${result.error || 'none'}`;
+    diagLines.push(`SpawnSync: ${spawnInfo}`);
+    diagLines.push(`Stdout length: ${stdout.length}, Stderr length: ${stderr.length}`);
+
+    if (result.error) {
+      return { __error: `Spawn error: ${result.error.message}\n\n── Diagnostics ──\n${diagLines.join('\n')}` };
+    }
 
     if (result.status !== 0) {
-      return { __error: `Exit code ${result.status}:\n${combined.trim()}\n\n── Diagnostics ──\n${diagStr2}` };
+      return { __error: `Exit code ${result.status}:\n${combined.trim()}\n\n── Diagnostics ──\n${diagLines.join('\n')}` };
     }
 
     const marker = '__MATCH_RESULT__';
     const idx = combined.indexOf(marker);
     if (idx < 0) {
-      return { __error: `No results in output:\n${combined.trim()}\n\n── Diagnostics ──\n${diagStr2}` };
+      return { __error: `No results marker in output.\n\nFull output:\n${combined.trim()}\n\n── Diagnostics ──\n${diagLines.join('\n')}` };
     }
 
     try {
