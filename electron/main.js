@@ -843,8 +843,14 @@ function registerIpc() {
 
   // ── Align: scan captions + slides, load/save mapping ───────────────────
   ipcMain.handle('align:scan', (_, cid) => {
+    // Course data may be under OUTPUT_DIR (user-configured) or DATA_DIR (~/.auto_note/)
     const outDir    = getOutputDir();
-    const base      = path.join(outDir, String(cid));
+    let base        = path.join(outDir, String(cid));
+    if (!fs.existsSync(base)) {
+      // Fallback: check DATA_DIR (where Python scripts store data by default)
+      const altBase = path.join(DATA_DIR, String(cid));
+      if (fs.existsSync(altBase)) base = altBase;
+    }
     const capDir    = path.join(base, 'captions');
     const matDir    = path.join(base, 'materials');
     const alignDir  = path.join(base, 'alignment');
@@ -1103,7 +1109,12 @@ function registerIpc() {
 
   ipcMain.handle('align:saveMapping', (_, { cid, mapping }) => {
     const outDir   = getOutputDir();
-    const alignDir = path.join(outDir, String(cid), 'alignment');
+    let base       = path.join(outDir, String(cid));
+    if (!fs.existsSync(base)) {
+      const altBase = path.join(DATA_DIR, String(cid));
+      if (fs.existsSync(altBase)) base = altBase;
+    }
+    const alignDir = path.join(base, 'alignment');
     if (!fs.existsSync(alignDir)) fs.mkdirSync(alignDir, { recursive: true });
     const mapFile  = path.join(alignDir, 'video_slide_mapping.json');
     fs.writeFileSync(mapFile, JSON.stringify(mapping, null, 2));
