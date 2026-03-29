@@ -1523,15 +1523,21 @@ async function attachPageHandlers() {
           Term.setStatus('✓ done', 'var(--c-success)');
           // Reload the mapping file that the script saved
           const data = await window.api.alignScan(cid);
-          if (data.mapping && Object.keys(data.mapping).length) {
+          const mapKeys = data.mapping ? Object.keys(data.mapping) : [];
+          const rowStems = AlignState.rows.map(r => r.stem);
+          Term.write(`\n── Reload mapping ──\nMapping keys: ${JSON.stringify(mapKeys)}\nRow stems: ${JSON.stringify(rowStems)}\n`, 'cmd');
+          if (mapKeys.length) {
+            let updated = 0;
             for (const row of AlignState.rows) {
               if (data.mapping[row.stem] && data.mapping[row.stem].length) {
                 row.slides = data.mapping[row.stem];
+                updated++;
               }
             }
             _alignRebuildRows();
-            snack(`Smart match applied: ${Object.keys(data.mapping).length} video(s) matched.`);
+            snack(`Smart match applied: ${updated} video(s) matched.`);
           } else {
+            Term.write('Mapping file empty or not found by align:scan.\n', 'warn');
             snack('Smart match saved no matches — check terminal output.', false);
           }
         } else if (code === -15 || code === null) {

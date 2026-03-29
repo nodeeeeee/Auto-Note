@@ -1320,7 +1320,8 @@ def _sample_slide_text(slide_path: Path, max_words: int = 400) -> str:
     """Return text sampled evenly across all slides (no vision API)."""
     try:
         slides = load_slides(slide_path)   # describer=None → text only
-    except Exception:
+    except Exception as e:
+        print(f"    [warn] Cannot read {slide_path.name}: {e}")
         return ""
     if not slides:
         return ""
@@ -1416,11 +1417,19 @@ def suggest_matches(
     captions = sorted(captions_dir.glob("*.json")) if captions_dir.exists() else []
     all_slides = _candidate_slides(course_dir)
 
-    if not captions or not all_slides:
+    print(f"  [match] Embedding-based matching with model={model}", flush=True)
+    print(f"  [match] Course dir: {course_dir}", flush=True)
+    print(f"  [match] Captions dir: {captions_dir} (exists={captions_dir.exists()})", flush=True)
+    print(f"  [match] Materials dir: {course_dir / 'materials'} (exists={(course_dir / 'materials').exists()})", flush=True)
+
+    if not captions:
+        print(f"  [match] No caption files found in {captions_dir}")
+        return {}
+    if not all_slides:
+        print(f"  [match] No slide files found under {course_dir / 'materials'}")
         return {}
 
-    print(f"  [match] Embedding-based matching with model={model}")
-    print(f"  [match] {len(captions)} caption(s), {len(all_slides)} slide file(s)")
+    print(f"  [match] {len(captions)} caption(s), {len(all_slides)} slide file(s)", flush=True)
 
     # ── Sample text from each source ─────────────────────────────────────────
     cap_texts: list[str] = []
@@ -1430,6 +1439,9 @@ def suggest_matches(
         if t.strip():
             cap_texts.append(t)
             cap_stems.append(cap.stem)
+            print(f"    caption: {cap.stem} ({len(t.split())} words)", flush=True)
+        else:
+            print(f"    caption: {cap.stem} (NO TEXT)", flush=True)
 
     slide_texts: list[str] = []
     slide_paths: list[Path] = []
@@ -1438,6 +1450,9 @@ def suggest_matches(
         if t.strip():
             slide_texts.append(t)
             slide_paths.append(sp)
+        # Only log failures (too many slides to log all)
+        elif sp.suffix.lower() == '.pdf':
+            print(f"    slide: {sp.name} (NO TEXT — PDF unreadable?)", flush=True)
 
     if not cap_texts:
         print(f"  [match] No caption text extracted from {len(captions)} file(s) — check captions dir")
