@@ -275,7 +275,7 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
           f"≤{_API_CHUNK_MINUTES} min  (total {total_dur:.0f}s)")
 
     all_segments: list = []
-    detected_lang: str | None = None   # set after first chunk; locked for all subsequent chunks
+    chunk_langs:  list[str] = []   # per-chunk detected language for majority vote
     lang_prob     = 1.0
     total_dropped = 0
 
@@ -289,9 +289,10 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
             _extract_audio(audio_path, chunk_file, start=start, duration=dur)
             chunk_mb = chunk_file.stat().st_size / (1024 ** 2)
 
-            # Chunk 1: auto-detect (or use explicit setting).
-            # Chunk 2+: lock to the language detected from chunk 1 to prevent drift.
-            chunk_lang = WHISPER_LANGUAGE if i == 0 else (detected_lang or WHISPER_LANGUAGE)
+            # When language is set explicitly, use it for every chunk.
+            # When auto-detecting (None), let each chunk detect independently
+            # so one bad first-chunk detection doesn't poison the whole file.
+            chunk_lang = WHISPER_LANGUAGE
             print(f"  {chunk_mb:.1f} MB  lang={chunk_lang or 'auto'}  "
                   f"sending to API...", end="", flush=True)
 
@@ -306,10 +307,10 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
                 )
             elapsed = _time.monotonic() - t0
 
-            # First chunk determines language for all subsequent chunks
-            if i == 0:
-                lang_full     = getattr(response, "language", "english") or "english"
-                detected_lang = _LANG_NAMES.get(lang_full.lower(), lang_full[:2].lower())
+            # Collect per-chunk language for majority vote
+            lang_full    = getattr(response, "language", "english") or "english"
+            chunk_detect = _LANG_NAMES.get(lang_full.lower(), lang_full[:2].lower())
+            chunk_langs.append(chunk_detect)
 
             resp_dict = response.model_dump()
             api_segs  = resp_dict.get("segments", [])
@@ -337,16 +338,19 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
             all_segments.extend(segs)
 
             drop_note = f"  ({n_dropped} dropped)" if n_dropped else ""
-            lang_note = (f"  lang={detected_lang}" if i == 0 else "")
+            lang_note = f"  lang={chunk_detect}"
             print(f"  done in {elapsed:.0f}s  {len(segs)} segs{drop_note}{lang_note}")
 
-    if detected_lang and i == 0:   # only one chunk — print lang info here
-        pass  # already printed above
-    elif detected_lang:
-        print(f"  Language locked to '{detected_lang}' from first chunk")
+    # Majority vote across chunks for the final language label
+    from collections import Counter
+    detected_lang = Counter(chunk_langs).most_common(1)[0][0] if chunk_langs else "en"
+    if len(set(chunk_langs)) > 1:
+        print(f"  Language votes: {dict(Counter(chunk_langs))} → '{detected_lang}'")
+    else:
+        print(f"  Detected language: '{detected_lang}'")
 
     result = {
-        "language":             detected_lang or "en",
+        "language":             detected_lang,
         "language_probability": lang_prob,
         "duration":             round(total_dur, 3),
         "segments":             all_segments,
