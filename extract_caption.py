@@ -275,11 +275,37 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
           f"≤{_API_CHUNK_MINUTES} min  (total {total_dur:.0f}s)")
 
     all_segments: list = []
-    chunk_langs:  list[str] = []   # per-chunk detected language for majority vote
+    detected_lang: str | None = WHISPER_LANGUAGE
     lang_prob     = 1.0
     total_dropped = 0
 
     with tempfile.TemporaryDirectory() as tmp:
+        # ── Language detection: probe from mid-audio ─────────────────────────
+        # Lecture beginnings often have intro music, silence, or greetings in
+        # another language, which confuse Whisper's 30-second language detector.
+        # A clip from the middle of the recording is far more representative.
+        if not WHISPER_LANGUAGE:
+            _PROBE_SEC = 30
+            probe_start = max(0, total_dur / 2 - _PROBE_SEC / 2)
+            probe_dur   = min(_PROBE_SEC, total_dur - probe_start)
+            probe_file  = Path(tmp) / "lang_probe.mp3"
+            print(f"  Detecting language from mid-audio "
+                  f"({probe_start:.0f}s–{probe_start + probe_dur:.0f}s)...",
+                  end="", flush=True)
+            _extract_audio(audio_path, probe_file,
+                           start=probe_start, duration=probe_dur)
+            with open(probe_file, "rb") as f:
+                probe_resp = client.audio.transcriptions.create(
+                    model="whisper-1", file=f,
+                    response_format="verbose_json",
+                )
+            lang_full     = getattr(probe_resp, "language", "english") or "english"
+            detected_lang = _LANG_NAMES.get(lang_full.lower(), lang_full[:2].lower())
+            print(f"  '{detected_lang}'")
+
+        print(f"  Using language: '{detected_lang}'")
+
+        # ── Transcribe chunks ────────────────────────────────────────────────
         for i, start in enumerate(offsets):
             dur        = min(chunk_sec, total_dur - start)
             chunk_file = Path(tmp) / f"chunk_{i:03d}.mp3"
@@ -289,11 +315,7 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
             _extract_audio(audio_path, chunk_file, start=start, duration=dur)
             chunk_mb = chunk_file.stat().st_size / (1024 ** 2)
 
-            # When language is set explicitly, use it for every chunk.
-            # When auto-detecting (None), let each chunk detect independently
-            # so one bad first-chunk detection doesn't poison the whole file.
-            chunk_lang = WHISPER_LANGUAGE
-            print(f"  {chunk_mb:.1f} MB  lang={chunk_lang or 'auto'}  "
+            print(f"  {chunk_mb:.1f} MB  "
                   f"sending to API...", end="", flush=True)
 
             t0 = _time.monotonic()
@@ -303,14 +325,9 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
                     file=f,
                     response_format="verbose_json",
                     timestamp_granularities=["word", "segment"],
-                    language=chunk_lang,
+                    language=detected_lang,
                 )
             elapsed = _time.monotonic() - t0
-
-            # Collect per-chunk language for majority vote
-            lang_full    = getattr(response, "language", "english") or "english"
-            chunk_detect = _LANG_NAMES.get(lang_full.lower(), lang_full[:2].lower())
-            chunk_langs.append(chunk_detect)
 
             resp_dict = response.model_dump()
             api_segs  = resp_dict.get("segments", [])
@@ -338,16 +355,7 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
             all_segments.extend(segs)
 
             drop_note = f"  ({n_dropped} dropped)" if n_dropped else ""
-            lang_note = f"  lang={chunk_detect}"
-            print(f"  done in {elapsed:.0f}s  {len(segs)} segs{drop_note}{lang_note}")
-
-    # Majority vote across chunks for the final language label
-    from collections import Counter
-    detected_lang = Counter(chunk_langs).most_common(1)[0][0] if chunk_langs else "en"
-    if len(set(chunk_langs)) > 1:
-        print(f"  Language votes: {dict(Counter(chunk_langs))} → '{detected_lang}'")
-    else:
-        print(f"  Detected language: '{detected_lang}'")
+            print(f"  done in {elapsed:.0f}s  {len(segs)} segs{drop_note}")
 
     result = {
         "language":             detected_lang,
