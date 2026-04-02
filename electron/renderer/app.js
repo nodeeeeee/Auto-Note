@@ -1393,7 +1393,7 @@ async function attachPageHandlers() {
         chain.push(['Align', [python, paths.align, '--course', cid]]);
       }
       if (steps.includes('generate')) {
-        const c = [python, paths.generate, '--course', cid, '--course-name', name || courseNameFromId(cid), '--detail', detail];
+        const c = [python, paths.generate, '--course', cid, '--course-name', name || courseNameFromId(cid), '--detail', detail, '--per-video'];
         if (lf) c.push('--lectures', lf);
         if (force) c.push('--force');
         chain.push(['Generate notes', c]);

@@ -281,9 +281,12 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
 
     with tempfile.TemporaryDirectory() as tmp:
         # ── Language detection: probe from mid-audio ─────────────────────────
-        # Lecture beginnings often have intro music, silence, or greetings in
-        # another language, which confuse Whisper's 30-second language detector.
-        # A clip from the middle of the recording is far more representative.
+        # Whisper's auto-detect can misidentify accented English as another
+        # language (e.g. Malay, Welsh).  We probe from the middle of the
+        # recording (avoiding intro music / silence) and, when the result is
+        # not English, re-probe with language="en" and compare avg_logprob.
+        # The model's own confidence reliably distinguishes correct from
+        # hallucinated transcriptions.
         if not WHISPER_LANGUAGE:
             _PROBE_SEC = 30
             probe_start = max(0, total_dur / 2 - _PROBE_SEC / 2)
@@ -301,7 +304,28 @@ def transcribe_api(video_path: Path, caption_path: Path) -> bool:
                 )
             lang_full     = getattr(probe_resp, "language", "english") or "english"
             detected_lang = _LANG_NAMES.get(lang_full.lower(), lang_full[:2].lower())
-            print(f"  '{detected_lang}'")
+            print(f"  '{detected_lang}'", end="", flush=True)
+
+            # If auto-detect chose a non-English language, verify by comparing
+            # model confidence (avg_logprob) between the two.
+            if detected_lang != "en":
+                auto_segs = (probe_resp.model_dump().get("segments") or [])
+                auto_lp   = (sum(s.get("avg_logprob", 0) for s in auto_segs)
+                             / max(len(auto_segs), 1))
+                with open(probe_file, "rb") as f:
+                    en_resp = client.audio.transcriptions.create(
+                        model="whisper-1", file=f,
+                        response_format="verbose_json",
+                        language="en",
+                    )
+                en_segs = (en_resp.model_dump().get("segments") or [])
+                en_lp   = (sum(s.get("avg_logprob", 0) for s in en_segs)
+                           / max(len(en_segs), 1))
+                if en_lp > auto_lp:
+                    print(f" → English wins (en={en_lp:.3f} vs {detected_lang}={auto_lp:.3f})")
+                    detected_lang = "en"
+                else:
+                    print(f" → confirmed (en={en_lp:.3f} vs {detected_lang}={auto_lp:.3f})")
 
         print(f"  Using language: '{detected_lang}'")
 
