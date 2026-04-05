@@ -1593,6 +1593,10 @@ def main() -> None:
     if args.language:
         NOTE_LANGUAGE = args.language
         print(f"Note language: {NOTE_LANGUAGE}")
+        # Changing language invalidates cached sections — auto-enable force
+        if not args.force:
+            args.force = True
+            print(f"  (force-regenerate enabled: language differs from cached sections)")
 
     if args.course:
         course_dir  = COURSE_DATA_DIR / args.course

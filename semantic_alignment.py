@@ -1486,7 +1486,8 @@ def suggest_matches(
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
             print(f"  [match] Loading {model_name} on {device}...")
-            embedder = SentenceTransformer(model_name, device=device)
+            embedder = SentenceTransformer(model_name, device=device,
+                                           trust_remote_code=True)
             all_texts = cap_texts + slide_texts
             embs = embedder.encode(
                 all_texts,
