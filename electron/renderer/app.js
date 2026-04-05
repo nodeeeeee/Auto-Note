@@ -18,6 +18,7 @@ const State = {
     detail:     '7',
     courseName: '',
     lecFilter:  '',
+    language:   'en',
     stealth:    false,
     force:      false,
     steps: { mat: true, vid: true, trans: true, align: true, gen: true },
@@ -602,9 +603,18 @@ function buildPipeline() {
         ${mkSwitch('pp-stealth', 'Slack mode for downloads', ps.stealth)}
         <hr class="divider">
         <span class="label">Note generation</span>
-        <div class="field">
-          <label class="label">Course name for notes</label>
-          <input id="pp-course-name" class="input-text" type="text" value="${esc(ps.courseName)}">
+        <div class="row" style="gap:8px">
+          <div class="field" style="flex:1">
+            <label class="label">Course name for notes</label>
+            <input id="pp-course-name" class="input-text" type="text" value="${esc(ps.courseName)}">
+          </div>
+          <div class="field" style="min-width:110px">
+            <label class="label">Language</label>
+            <select id="pp-language" class="select-ctrl">
+              <option value="en"${ps.language === 'en' ? ' selected' : ''}>English</option>
+              <option value="zh"${ps.language === 'zh' ? ' selected' : ''}>中文</option>
+            </select>
+          </div>
         </div>
         <div class="row center" style="gap:8px;margin-top:8px">
           <span class="slider-value" id="pp-detail-val">${esc(ps.detail)}</span>
@@ -858,9 +868,18 @@ function buildGenerate() {
       ${mkCard(`
         <span class="label">Course</span>
         <select id="gen-course" class="select-ctrl">${courseOptions()}</select>
-        <div class="field" style="margin-top:8px">
-          <label class="label">Course name</label>
-          <input id="gen-course-name" class="input-text" type="text">
+        <div class="row" style="gap:8px;margin-top:8px">
+          <div class="field" style="flex:1">
+            <label class="label">Course name</label>
+            <input id="gen-course-name" class="input-text" type="text">
+          </div>
+          <div class="field" style="min-width:110px">
+            <label class="label">Language</label>
+            <select id="gen-language" class="select-ctrl">
+              <option value="en" selected>English</option>
+              <option value="zh">中文</option>
+            </select>
+          </div>
         </div>
         <div class="field" style="margin-top:8px">
           <label class="label">Lecture</label>
@@ -1413,6 +1432,9 @@ async function attachPageHandlers() {
     document.getElementById('pp-lec-filter')?.addEventListener('input', e => {
       State.pipeline.lecFilter = e.target.value;
     });
+    document.getElementById('pp-language')?.addEventListener('change', e => {
+      State.pipeline.language = e.target.value;
+    });
     document.getElementById('pp-stealth')?.addEventListener('change', e => {
       State.pipeline.stealth = e.target.checked;
     });
@@ -1445,6 +1467,7 @@ async function attachPageHandlers() {
       const force   = document.getElementById('pp-force')?.checked;
       const name    = document.getElementById('pp-course-name')?.value.trim() || '';
       const detail  = document.getElementById('pp-detail')?.value || '7';
+      const lang    = document.getElementById('pp-language')?.value || 'en';
       const lf      = document.getElementById('pp-lec-filter')?.value.trim() || '';
       const steps = [
         ['dl_mat',   document.getElementById('pp-step-mat')?.checked],
@@ -1480,7 +1503,7 @@ async function attachPageHandlers() {
         chain.push(['Align', c]);
       }
       if (steps.includes('generate')) {
-        const c = [python, paths.generate, '--course', cid, '--course-name', name || courseNameFromId(cid), '--detail', detail, '--per-video'];
+        const c = [python, paths.generate, '--course', cid, '--course-name', name || courseNameFromId(cid), '--detail', detail, '--language', lang, '--per-video'];
         if (lf) c.push('--lectures', lf);
         if (force) c.push('--force');
         chain.push(['Generate notes', c]);
@@ -1703,12 +1726,13 @@ async function attachPageHandlers() {
       const paths   = await window.api.getScriptsPaths();
       const name    = document.getElementById('gen-course-name')?.value.trim() || courseNameFromId(cid);
       const detail  = document.getElementById('gen-detail')?.value || '7';
+      const lang    = document.getElementById('gen-language')?.value || 'en';
       const force   = document.getElementById('gen-force')?.checked;
       const merge   = document.getElementById('gen-merge')?.checked;
       const iter    = document.getElementById('gen-iterate')?.checked;
       const lecNum  = document.getElementById('gen-lec-select')?.value;   // '' = all
 
-      const cmd = [python, paths.generate, '--course', cid, '--course-name', name, '--detail', detail];
+      const cmd = [python, paths.generate, '--course', cid, '--course-name', name, '--detail', detail, '--language', lang];
       if (lecNum) cmd.push('--lectures', lecNum);
       if (force)  cmd.push('--force');
       if (merge)  cmd.push('--merge-only');

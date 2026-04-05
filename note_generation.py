@@ -1016,17 +1016,17 @@ def self_score(all_slides: list[SlideInfo], full_notes: str,
 def _print_score(scores: dict, label: str) -> None:
     st = scores.get("stats", {})
     tqdm.write(f"\n  ┌──────────────────────────────────────────────┐")
-    tqdm.write(f"  │ 自评分: {label[:36]:36s}│")
+    tqdm.write(f"  │ Score: {label[:38]:38s}│")
     tqdm.write(f"  ├──────────────────────────────────────────────┤")
-    tqdm.write(f"  │ 覆盖率     {scores['coverage']:4.1f}/10  "
+    tqdm.write(f"  │ Coverage   {scores['coverage']:4.1f}/10  "
                f"({st.get('note_words','?')} / ~{st.get('expected_words','?')} words) │")
-    tqdm.write(f"  │ 术语准确率 {scores['terminology']:4.1f}/10  "
+    tqdm.write(f"  │ Terminology{scores['terminology']:4.1f}/10  "
                f"({st.get('term_hits','?')}/{st.get('term_total','?')} terms)       │")
-    tqdm.write(f"  │ 重点标注   {scores['callouts']:4.1f}/10  "
+    tqdm.write(f"  │ Callouts   {scores['callouts']:4.1f}/10  "
                f"({st.get('callouts_written','?')}/{st.get('callouts_needed','?')} callouts)     │")
-    tqdm.write(f"  │ 代码块     {scores['code_blocks']:4.1f}/10  "
+    tqdm.write(f"  │ Code blocks{scores['code_blocks']:4.1f}/10  "
                f"({st.get('code_blocks','?')}/{st.get('code_slides','?')} code slides)   │")
-    tqdm.write(f"  │ 综合评分   {scores['overall']:4.2f}/10                              │")
+    tqdm.write(f"  │ Overall    {scores['overall']:4.2f}/10                              │")
     tqdm.write(f"  └──────────────────────────────────────────────┘")
 
 
@@ -1388,15 +1388,15 @@ def generate_with_iteration(
             best_path  = path
 
         if overall >= QUALITY_TARGET:
-            tqdm.write(f"\n  ✓ 达到目标 {QUALITY_TARGET} (得分={overall:.2f})")
+            tqdm.write(f"\n  ✓ Target {QUALITY_TARGET} reached (score={overall:.2f})")
             break
         if rnd < max_rounds:
-            tqdm.write(f"\n  得分 {overall:.2f} < {QUALITY_TARGET}，提升详细度后重试…")
+            tqdm.write(f"\n  Score {overall:.2f} < {QUALITY_TARGET}, raising detail and retrying…")
             versioned = path.with_name(f"{path.stem}_r{rnd}{path.suffix}")
             path.rename(versioned)
             detail = min(detail + 2, 10)
 
-    tqdm.write(f"\n  最佳: {best_path}  (得分={best_score:.2f})")
+    tqdm.write(f"\n  Best: {best_path}  (score={best_score:.2f})")
     return best_path
 
 
@@ -1583,7 +1583,15 @@ def main() -> None:
                         help="Filter lectures, e.g. '1-5' or '1,2,3'")
     parser.add_argument("--per-video",  action="store_true",
                         help="Generate one note file per video/lecture instead of one combined note")
+    parser.add_argument("--language",   metavar="LANG", default=None,
+                        choices=["en", "zh"],
+                        help="Note language: en (English) or zh (Chinese). "
+                             "Overrides the NOTE_LANGUAGE constant.")
     args = parser.parse_args()
+
+    if args.language:
+        global NOTE_LANGUAGE
+        NOTE_LANGUAGE = args.language
 
     if args.course:
         course_dir  = COURSE_DATA_DIR / args.course
