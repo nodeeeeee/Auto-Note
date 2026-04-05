@@ -404,12 +404,28 @@ def load_slides(path: Path,
 
 def get_embedder():
     """Load sentence-transformer model once; use GPU if available."""
+    import warnings
     from sentence_transformers import SentenceTransformer
     import torch
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"  [embed] Loading {EMBED_MODEL} on {device} ...", flush=True)
     try:
-        model = SentenceTransformer(EMBED_MODEL, device=device)
+        # Suppress the safetensors LOAD REPORT (position_ids UNEXPECTED).
+        # It writes directly to fd 1/2, so we must redirect at the OS level.
+        import os as _os
+        _devnull = _os.open(_os.devnull, _os.O_WRONLY)
+        _saved_stdout = _os.dup(1)
+        _saved_stderr = _os.dup(2)
+        _os.dup2(_devnull, 1)
+        _os.dup2(_devnull, 2)
+        try:
+            model = SentenceTransformer(EMBED_MODEL, device=device)
+        finally:
+            _os.dup2(_saved_stdout, 1)
+            _os.dup2(_saved_stderr, 2)
+            _os.close(_devnull)
+            _os.close(_saved_stdout)
+            _os.close(_saved_stderr)
     except Exception as e:
         print(f"  [embed] Failed to load model: {e}", flush=True)
         raise
@@ -1486,8 +1502,21 @@ def suggest_matches(
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
             print(f"  [match] Loading {model_name} on {device}...")
-            embedder = SentenceTransformer(model_name, device=device,
-                                           trust_remote_code=True)
+            import os as _os
+            _devnull = _os.open(_os.devnull, _os.O_WRONLY)
+            _saved_out = _os.dup(1)
+            _saved_err = _os.dup(2)
+            _os.dup2(_devnull, 1)
+            _os.dup2(_devnull, 2)
+            try:
+                embedder = SentenceTransformer(model_name, device=device,
+                                               trust_remote_code=True)
+            finally:
+                _os.dup2(_saved_out, 1)
+                _os.dup2(_saved_err, 2)
+                _os.close(_devnull)
+                _os.close(_saved_out)
+                _os.close(_saved_err)
             all_texts = cap_texts + slide_texts
             embs = embedder.encode(
                 all_texts,
@@ -1634,11 +1663,11 @@ def process_course(course_id: int | str, use_jina: bool = False,
         for stem, rel in raw.items():
             sp = course_dir / rel
             if sp.exists():
-                num = _lec_num(sp)
-                if num is not None and num in slides_by_num:
-                    bge_matches[stem] = sorted(slides_by_num[num])
-                else:
-                    bge_matches[stem] = [sp]
+                # Use only the specific file BGE-M3 picked — don't expand to
+                # all files with the same lecture number, as that would include
+                # duplicate versions (annotated, review, with-notes copies) and
+                # degrade alignment quality.
+                bge_matches[stem] = [sp]
         if bge_matches:
             print(f"  [bge-m3] Pre-matched {len(bge_matches)} video(s) to slides")
     except Exception as e:
