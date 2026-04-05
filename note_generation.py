@@ -1223,6 +1223,8 @@ def generate_course_notes(
     # sections/ sub-directory: each chunk saved as L{N}_S{ci}.md
     sections_dir = out_dir / "sections"
     sections_dir.mkdir(exist_ok=True)
+    # Write language marker so future runs detect language changes
+    (sections_dir / ".language").write_text(NOTE_LANGUAGE, encoding="utf-8")
 
     # Load all lectures first to get accurate chunk counts
     tqdm.write("  Loading lecture data…")
@@ -1289,6 +1291,7 @@ def generate_per_video_notes(
     out_dir.mkdir(parents=True, exist_ok=True)
     sections_dir = out_dir / "sections"
     sections_dir.mkdir(exist_ok=True)
+    (sections_dir / ".language").write_text(NOTE_LANGUAGE, encoding="utf-8")
 
     tqdm.write("  Loading lecture data…")
     for ld in lectures:
@@ -1593,10 +1596,6 @@ def main() -> None:
     if args.language:
         NOTE_LANGUAGE = args.language
         print(f"Note language: {NOTE_LANGUAGE}")
-        # Changing language invalidates cached sections — auto-enable force
-        if not args.force:
-            args.force = True
-            print(f"  (force-regenerate enabled: language differs from cached sections)")
 
     if args.course:
         course_dir  = COURSE_DATA_DIR / args.course
@@ -1626,6 +1625,15 @@ def main() -> None:
         out_path     = Path(args.out) if args.out else \
                        course_dir / "notes" / f"{course_name}_notes{ext_out}"
         sections_dir = out_path.parent / "sections"
+
+        # Auto-force when language changed from the previously cached language
+        lang_marker = sections_dir / ".language"
+        if not args.force and lang_marker.exists():
+            cached_lang = lang_marker.read_text(encoding="utf-8").strip()
+            if cached_lang != NOTE_LANGUAGE:
+                args.force = True
+                print(f"  Language changed ({cached_lang} → {NOTE_LANGUAGE}), "
+                      f"force-regenerating sections.")
 
         if args.per_video:
             # Per-video mode: one note per lecture/video
