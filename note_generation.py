@@ -1564,6 +1564,7 @@ def _discover_lectures(course_dir: Path) -> list[LectureData]:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    global NOTE_LANGUAGE
     parser = argparse.ArgumentParser(description="Generate course lecture notes")
     parser.add_argument("--course",      metavar="ID")
     parser.add_argument("--slides",      metavar="PATH")
@@ -1590,8 +1591,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.language:
-        global NOTE_LANGUAGE
         NOTE_LANGUAGE = args.language
+        print(f"Note language: {NOTE_LANGUAGE}")
 
     if args.course:
         course_dir  = COURSE_DATA_DIR / args.course

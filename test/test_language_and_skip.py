@@ -156,65 +156,55 @@ class TestLanguageCLIArg:
         assert r.returncode != 0, "Invalid language should cause an error"
 
     def test_language_overrides_constant(self):
-        """Verify that --language actually changes the NOTE_LANGUAGE global."""
-        # Run a small Python snippet that imports note_generation and checks
-        script = textwrap.dedent("""\
-            import sys, os
-            sys.argv = ['note_generation.py', '--course', '99999', '--language', 'zh']
-            # Patch argparse to not exit on --course 99999
-            import note_generation
-            # At module level, NOTE_LANGUAGE is 'en'
-            assert note_generation.NOTE_LANGUAGE == 'en', (
-                f"Default should be 'en', got {note_generation.NOTE_LANGUAGE!r}")
-            # Simulate main() parsing
-            import argparse
-            parser = argparse.ArgumentParser()
-            parser.add_argument('--course')
-            parser.add_argument('--language', choices=['en', 'zh'], default=None)
-            args, _ = parser.parse_known_args()
-            if args.language:
-                note_generation.NOTE_LANGUAGE = args.language
-            assert note_generation.NOTE_LANGUAGE == 'zh', (
-                f"After --language zh, should be 'zh', got {note_generation.NOTE_LANGUAGE!r}")
-            print('PASS')
-        """)
-        r = subprocess.run(
-            [PYTHON, "-c", script],
-            capture_output=True, text=True, timeout=15,
-            cwd=str(PROJECT_DIR),
+        """Verify that --language zh is confirmed in subprocess output."""
+        r = _run("note_generation.py", "--course", "99999",
+                 "--language", "zh", "--course-name", "Test")
+        assert "Note language: zh" in r.stdout, (
+            f"Language confirmation not found in output:\n{r.stdout}\n{r.stderr}"
         )
-        assert "PASS" in r.stdout, (
-            f"Language override test failed:\n{r.stdout}\n{r.stderr}"
+
+    def test_language_en_not_printed_when_default(self):
+        """When --language is not passed, no language line should be printed."""
+        r = _run("note_generation.py", "--course", "99999", "--course-name", "Test")
+        assert "Note language:" not in r.stdout, (
+            f"Language line should not appear without --language flag:\n{r.stdout}"
         )
 
     def test_prompt_selection_respects_language(self):
         """Verify _P() returns Chinese prompts when NOTE_LANGUAGE is 'zh'."""
-        script = textwrap.dedent("""\
-            import sys
-            sys.argv = ['test']
-            import note_generation
-            # Default: English
+        import note_generation
+        # Default: English
+        original = note_generation.NOTE_LANGUAGE
+        try:
             note_generation.NOTE_LANGUAGE = 'en'
             en_sys = note_generation._P('system')
-            assert 'diagram' in en_sys.lower() or 'note' in en_sys.lower(), (
+            assert 'note' in en_sys.lower(), (
                 'English system prompt should contain English text')
-            # Switch to Chinese
+
             note_generation.NOTE_LANGUAGE = 'zh'
             zh_sys = note_generation._P('system')
-            # Chinese prompt should contain Chinese characters
-            import re
-            cjk = re.compile(r'[\\u4e00-\\u9fff]')
-            assert cjk.search(zh_sys), 'Chinese system prompt should contain CJK characters'
+            assert _CJK_RE.search(zh_sys), (
+                'Chinese system prompt should contain CJK characters')
             assert en_sys != zh_sys, 'English and Chinese prompts should differ'
-            print('PASS')
-        """)
-        r = subprocess.run(
-            [PYTHON, "-c", script],
-            capture_output=True, text=True, timeout=15,
-            cwd=str(PROJECT_DIR),
+        finally:
+            note_generation.NOTE_LANGUAGE = original
+
+    def test_global_declaration_at_function_top(self):
+        """Ensure 'global NOTE_LANGUAGE' is at the top of main(), not inside if."""
+        import inspect, ast
+        import note_generation
+        src = inspect.getsource(note_generation.main)
+        tree = ast.parse(textwrap.dedent(src))
+        func = tree.body[0]
+        # First statement in function body should be (or contain) the global
+        first_stmts = func.body[:3]  # check first few statements
+        has_global = any(
+            isinstance(s, ast.Global) and 'NOTE_LANGUAGE' in s.names
+            for s in first_stmts
         )
-        assert "PASS" in r.stdout, (
-            f"Prompt selection test failed:\n{r.stdout}\n{r.stderr}"
+        assert has_global, (
+            "'global NOTE_LANGUAGE' should be at the top of main(), "
+            "not inside a conditional block"
         )
 
 
