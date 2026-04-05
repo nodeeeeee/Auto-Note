@@ -1090,9 +1090,6 @@ const CONSTANTS_DEF = [
   ['align', 'CONTEXT_SEC',        'Context window (s)',       '30',   null],
   ['align', 'OFF_SLIDE_THRESHOLD','Off-slide cosine cutoff',  '0.28', null],
   ['align', 'PRIOR_SIGMA',        'Temporal prior σ',         '5',    null],
-  ['generate', 'NOTE_LANGUAGE', 'Note language', 'en', [
-    ['English','en'],['Chinese (中文)','zh'],
-  ]],
   ['generate', 'NOTE_MODEL', 'Note generation LLM', 'gpt-5.1', [
     // ── OpenAI ──────────────────────────────────────────────────────────
     ['GPT-5.1 ★','gpt-5.1'],['GPT-5.2','gpt-5.2'],
