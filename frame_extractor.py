@@ -632,11 +632,17 @@ def process_course(course_id: str, base_dir: Path) -> int:
         frame_dir = course_dir / "frames" / video_stem
         align_file = course_dir / "alignment" / f"{video_stem}.json"
 
-        # Skip if already processed
+        # Skip if already has frame-based alignment
         if align_file.exists():
-            print(f"  [skip] Already extracted: {video_stem}")
-            processed += 1
-            continue
+            try:
+                with open(align_file, encoding="utf-8") as _af:
+                    if json.load(_af).get("source") == "screenshare":
+                        print(f"  [skip] Already extracted: {video_stem}")
+                        processed += 1
+                        continue
+                # Existing alignment is slide-based — re-extract frames
+            except Exception:
+                pass
 
         # Find matching caption
         caption_path = course_dir / "captions" / f"{video_stem}.json"

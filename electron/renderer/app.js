@@ -1495,6 +1495,8 @@ async function attachPageHandlers() {
         chain.push(['Transcribe', c]);
       }
       if (steps.includes('align')) {
+        // Extract frames from screenshare videos before slide-based alignment
+        chain.push(['Extract frames', [python, paths.frame_extractor, '--course', cid, '--path', outDir]]);
         const c = [python, paths.align, '--course', cid];
         if (force) c.push('--force');
         chain.push(['Align', c]);

@@ -1684,6 +1684,20 @@ def process_course(course_id: int | str, use_jina: bool = False,
         except Exception:
             pass   # can't read → proceed and let align() handle it
 
+        # Skip captions that already have frame-based (screenshare) alignment.
+        # Those were produced by frame_extractor.py and should not be overwritten
+        # with slide-based alignment.
+        _existing_align = out_dir / f"{cap.stem}.json"
+        if _existing_align.exists():
+            try:
+                with open(_existing_align, encoding="utf-8") as _af:
+                    _align_data = json.load(_af)
+                if _align_data.get("source") == "screenshare":
+                    print(f"  [skip] Screenshare alignment exists: {cap.stem} (use frames)")
+                    continue
+            except Exception:
+                pass
+
         # ── Priority 1: user-supplied mapping ────────────────────────────────
         slide_group: list[Path] = []
         if cap.stem in user_mapping:
