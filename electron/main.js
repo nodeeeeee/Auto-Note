@@ -870,10 +870,10 @@ function deleteVideoData(courseId, captionStem) {
   for (const num of lecNums) {
     const prefix = `L${String(num).padStart(2, '0')}`;
 
-    // Delete section files: L{num}_S*.md
+    // Delete section files: L{num}_S*.md and L{num}_F*_S*.md
     if (fs.existsSync(sectionsDir)) {
       for (const sf of fs.readdirSync(sectionsDir)) {
-        if (sf.startsWith(prefix + '_S') && sf.endsWith('.md')) {
+        if (sf.startsWith(prefix + '_') && sf.endsWith('.md')) {
           fs.unlinkSync(path.join(sectionsDir, sf));
           deleted.push('notes/sections/' + sf);
         }
@@ -890,11 +890,15 @@ function deleteVideoData(courseId, captionStem) {
       }
     }
 
-    // Delete images directory: images/L{num}/
-    const imgDir = path.join(imagesDir, prefix);
-    if (fs.existsSync(imgDir)) {
-      fs.rmSync(imgDir, { recursive: true, force: true });
-      deleted.push('notes/images/' + prefix + '/');
+    // Delete images directories: images/L{num}/ and images/L{num}_F*/
+    if (fs.existsSync(imagesDir)) {
+      for (const d of fs.readdirSync(imagesDir)) {
+        if ((d === prefix || d.startsWith(prefix + '_F')) &&
+            fs.statSync(path.join(imagesDir, d)).isDirectory()) {
+          fs.rmSync(path.join(imagesDir, d), { recursive: true, force: true });
+          deleted.push('notes/images/' + d + '/');
+        }
+      }
     }
   }
 
