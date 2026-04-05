@@ -20,7 +20,7 @@ The app has six pages, accessible from the left navigation rail:
 
 | Page | Purpose |
 |------|---------|
-| **Dashboard** | Course overview: video / caption / alignment counts per course; quick-action shortcuts |
+| **Dashboard** | Course overview: video / caption / alignment counts per course; click a course to view per-video status and delete generated files; quick-action shortcuts |
 | **Pipeline** | One-click full pipeline wizard: runs all five steps in sequence |
 | **Download** | Fine-grained control over video and material downloads |
 | **Transcribe** | Transcribe downloaded videos to timestamped captions |
@@ -96,10 +96,11 @@ Each step only runs if the previous step succeeded. You can uncheck any step to 
 | Option | Description |
 |--------|-------------|
 | **Slack mode** | Adds random delays between downloads (5–15 min between videos, 2–5 min between material folders) to avoid rate-limiting. Enable when downloading in bulk. |
-| **Course name** | Name that appears in the final notes file (auto-filled from any existing notes). |
+| **Course name** | Name that appears in the final notes file (auto-filled when you select a course). |
+| **Language** | Language for generated notes: English or Chinese. Selectable per-run without changing Settings. |
 | **Detail level** | Controls note verbosity (see [Detail levels](#detail-levels) below). |
 | **Lecture filter** | Process only specific lectures, e.g. `1-5` or `1,3,5`. Leave blank for all. |
-| **Force regenerate** | Re-generate note sections even if they were already cached on disk. |
+| **Force regenerate** | Re-run the selected pipeline steps even if their output files already exist. Applies to whichever steps are checked (transcribe, align, and/or generate). Without this, only missing files are processed. |
 
 ---
 
@@ -153,8 +154,9 @@ Maps each Whisper caption segment to the slide page being presented at that mome
 Select a course and click **Run auto-align**. The aligner finds all unaligned caption/slide pairs automatically using a three-strategy matching system:
 
 1. **Lecture number** — matches `L02-foo.json` to `L02-Processes.pdf`
-2. **Token overlap** — Jaccard similarity on filename words
-3. **Content embedding** — embeds transcript samples and slide text; pairs by highest cosine similarity (fires when filenames don't match at all)
+2. **BGE-M3 embedding** — pre-matches all captions to slides using the BGE-M3 model for high-quality multilingual matching (default first option)
+3. **Token overlap** — Jaccard similarity on filename words
+4. **Content embedding fallback** — embeds transcript samples and slide text with mpnet; pairs by highest cosine similarity (fires when all above methods fail)
 
 ### Manual alignment
 
@@ -172,10 +174,11 @@ Generates a single comprehensive Markdown study note file covering all lectures.
 
 | Option | Description |
 |--------|-------------|
-| **Course name** | Used as the note file name and title. Auto-filled if notes already exist. |
+| **Course name** | Used as the note file name and title. Auto-filled when you select a course. |
+| **Language** | English or Chinese — selectable per-run. |
 | **Lecture filter** | Generate notes for specific lectures only (`1-5` or `1,3,5`). |
 | **Detail level** | 0–10 slider (see below). Default: 7. |
-| **Force regenerate** | Overwrite existing cached section files. |
+| **Force regenerate** | Re-generate all section files. Without this, existing sections are reused from cache. |
 | **Merge-only** | Re-run the merge and image-filter pass without re-generating any sections. Useful when you change only the merge prompt or image filter. |
 | **Iterative mode** | Automatically increases the detail level until the self-score target is reached. |
 
@@ -236,7 +239,7 @@ Available embedding models: `all-mpnet-base-v2` (best quality), `all-MiniLM-L12-
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Note language | Language for generated notes | English |
+| Note language | Default language for generated notes (can be overridden per-run from Pipeline/Generate pages) | English |
 | Note generation LLM | Primary model used to write sections | `gpt-5.1` |
 | Verification LLM | Lighter model used to check each section for accuracy | `gpt-4.1-mini` |
 | Default detail level | Starting detail level when none is specified | `8` |
@@ -261,7 +264,8 @@ The API key for the selected provider must be saved in Settings.
 |----------|-----------|
 | New lecture added to Canvas | Re-run the full pipeline — existing sections are cached, only new ones are generated |
 | Slides updated for an existing lecture | **Generate Notes → Lecture filter + Force regenerate** for that lecture |
-| Want to change note style or language | Update settings, then **Generate Notes → Merge-only** |
+| Want to change note style or language | Select the new language in the Pipeline/Generate page dropdown, then re-run with **Force regenerate** |
+| Want to delete bad notes for a video | Dashboard → click the course card → click **Delete** next to the video |
 | Pipeline stopped partway | Just run again — already-completed sections are skipped automatically |
 
 ---
