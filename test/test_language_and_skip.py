@@ -170,22 +170,25 @@ class TestLanguageCLIArg:
             f"Language line should not appear without --language flag:\n{r.stdout}"
         )
 
-    def test_prompt_selection_respects_language(self):
-        """Verify _P() returns Chinese prompts when NOTE_LANGUAGE is 'zh'."""
+    def test_prompts_always_english_translate_is_separate(self):
+        """Verify _P() always returns English prompts (translation is post-step)."""
         import note_generation
-        # Default: English
         original = note_generation.NOTE_LANGUAGE
         try:
             note_generation.NOTE_LANGUAGE = 'en'
             en_sys = note_generation._P('system')
-            assert 'note' in en_sys.lower(), (
-                'English system prompt should contain English text')
+            assert 'note' in en_sys.lower()
 
             note_generation.NOTE_LANGUAGE = 'zh'
             zh_sys = note_generation._P('system')
-            assert _CJK_RE.search(zh_sys), (
-                'Chinese system prompt should contain CJK characters')
-            assert en_sys != zh_sys, 'English and Chinese prompts should differ'
+            # Prompts should be identical — language is handled by _translate()
+            assert en_sys == zh_sys, (
+                'Prompts should be the same regardless of language; '
+                'translation is a separate post-generation step')
+
+            # _translate function should exist
+            assert hasattr(note_generation, '_translate'), (
+                '_translate function must exist for post-generation translation')
         finally:
             note_generation.NOTE_LANGUAGE = original
 

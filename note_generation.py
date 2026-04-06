@@ -82,112 +82,6 @@ MIN_NOTE_WORDS_PER_SLIDE = 60   # expected words per slide in final note
 
 _PROMPTS: dict[str, dict] = {
 
-"zh": dict(
-system="""\
-你是一名顶尖大学计算机科学课程的助教，负责根据讲义和课堂录音为学生撰写高质量的中文学习笔记。
-
-写作规范：
-1. 使用中文写作，专业技术术语保留英文并在括号内标注（如：进程 (Process)）。
-2. **严禁使用第三人称叙述视角。** 不得出现「老师说」「教授指出」「老师要我们」「本课教授强调」等以讲师为主语的句式。
-   笔记聚焦于**知识本身**，直接陈述概念、原理和结论，例如：
-   - ✗「老师把问题定得很清楚：…」  →  ✓「本课聚焦于…」
-   - ✗「教授用了一个例子…」        →  ✓「以下例子说明…」
-3. 内容以「概念→原理→示例→考试重点」逻辑展开，写成流畅的说明性段落，不要逐条罗列幻灯片。
-4. 数学公式使用 LaTeX：行内 $...$，单独公式 $$...$$。
-5. 代码示例必须是**可编译/可运行**的完整片段（包含必要的 #include、函数签名、main 等），使用正确的语法高亮（```c, ```cpp, ```python 等）。
-   伪代码仅在真正没有对应真实代码时使用，并标注语言为 ```pseudo。
-6. 考试重点用：
-     > [!IMPORTANT]
-     > 内容
-7. 有趣类比或助记技巧用斜体。
-8. 图片插入规则（严格遵守）：
-   - **插入且仅插入含视觉元素的图片**：图表、流程图、架构图、代码截图、数学推导、数据可视化等。如果是与课程无关的行政或其他元素（如课程信息、投票二维码、签到提示等），即使是图片也不要插入。
-   - 纯文字要点、定义、标题幻灯片不需要插入——笔记本身已用文字表达更好。
-   - **每张图片必须内联放置，紧跟解释该图片概念的段落之后。** 绝对不要将多张图片堆叠在一起。每张图片的上方和下方都应有解释性文字。如果一个片段有 5 张相关图片，它们应分散在文本的 5 个不同位置，各自紧邻相关解释。
-   - 幻灯片格式：`![Slide N](images/LXX/slide_NNN.png) *(一句话描述)*`
-   - 屏幕录制帧格式：`![Frame N](images/LXX/frame_NNN.png) *(一句话描述)*`
-     （LXX 由调用方提供，禁止自行修改）。
-9. 绝对禁止捏造原始材料中不存在的技术细节。
-""",
-chunk="""\
-请为以下课程片段（{course_name} Lecture {lec_num}: {lec_title}）撰写学习笔记。
-
-## 本片段幻灯片列表
-{slide_outline}
-
-## 教授录音逐字稿（按幻灯片顺序）
-{transcript_block}
-
-## 可用图片（含图表/代码截图的幻灯片）
-{image_hints}
-
----
-
-要求：
-- 本片段对应笔记的二级标题为 `### {lec_num}.{chunk_idx} {chunk_title}`（**不要输出此行**，由调用方添加）
-- 详细度：{detail}/10。{detail_instruction}
-- 图片插入：**插入所有含视觉元素的图片**（图表、流程图、架构图、代码截图、数学推导、数据可视化等），跳过纯文字截图和与课程无关的行政元素。
-  路径必须完全照抄上方「可用图片」列表中给出的路径（含 images/L** 子目录），禁止自造路径。
-  **关键：每张图片必须内联放在解释该概念的段落旁边，绝对不要将多张图片堆在一起。每张图片的上下都应有解释性文字。**
-  格式：`![Slide N](path) *(说明)*` 或 `![Frame N](path) *(说明)*`
-- 代码示例写完整可编译片段（含必要 include/imports），用正确的语言标签（```c, ```cpp, ```python）。
-- 只写本片段内容，不要引入其他讲座的内容
-""",
-slide_only="""\
-请根据以下幻灯片内容，撰写 {course_name} Lecture {lec_num}: {lec_title} 的学习笔记。
-（该讲座没有录音，请结合你的 CS 知识展开解释。）
-
-## 幻灯片内容
-{slide_outline}
-
-## 可用图片
-{image_hints}
-
----
-
-要求：
-- 本片段对应笔记的二级标题为 `### {lec_num}.{chunk_idx} {chunk_title}`（**不要输出此行**）
-- 详细度：{detail}/10。{detail_instruction}
-- 图片插入：**插入所有含视觉元素的图片**（图表、流程图、架构图、代码截图、数学推导、数据可视化等），跳过纯文字截图和与课程无关的行政元素。
-  路径必须完全照抄上方「可用图片」列表中给出的路径（含 images/L** 子目录），禁止自造路径。
-  **关键：每张图片必须内联放在解释该概念的段落旁边，绝对不要将多张图片堆在一起。每张图片的上下都应有解释性文字。**
-  格式：`![Slide N](path) *(说明)*` 或 `![Frame N](path) *(说明)*`
-- 代码示例写完整可编译片段，用正确的语言标签（```c, ```cpp, ```python）。
-""",
-verify="""\
-请检查以下笔记片段中的技术术语是否与幻灯片一致，以及是否存在明显的事实错误。
-
-**参考术语表（来自幻灯片）：**
-{term_list}
-
-**笔记片段：**
-{draft}
-
-如果没有问题，直接回复 APPROVED（仅此一词）。
-如果有术语错误或事实错误，返回修正后的完整笔记片段（不加任何说明）。
-""",
-exam="""\
-以下是 {course_name} 的全部讲座笔记摘要。请在最后汇总一个考试速记章节。
-
-格式要求：
-- 标题：`## Exam Notes`
-- 每条格式：`N. **考点名**：一句话说明`
-- 不超过 30 条，覆盖各讲座核心考点、公式、算法步骤、常见混淆点
-
-笔记摘要：
-{summary}
-""",
-no_transcript="（本片段无录音逐字稿）",
-detail_instructions=[
-    (range(0, 3),  "极简要点：每个概念仅一行，不展开，每张幻灯片最多3条。"),
-    (range(3, 6),  "有层次的要点结构：每个主要概念一条一级bullet（`-`），"
-                   "其下最多2条二级bullet（`  -`）补充关键细节。"
-                   "每张幻灯片合计不超过5条，禁止写连续段落。"),
-    (range(6, 9),  "详细段落：概念、原理、教授示例与类比全部包含。"),
-    (range(9, 11), "最高详细度：包含所有细节、边界情况、与其他章节的联系及考点标注。"),
-],
-),  # end zh
-
 "en": dict(
 system="""\
 You are a teaching assistant at a top university, writing high-quality study notes for computer science courses based on lecture slides and audio transcripts.
@@ -207,7 +101,7 @@ Writing guidelines:
 8. Image insertion rules (strictly follow):
    - **Insert all and only images that contain visual elements**: diagrams, flowcharts, architecture drawings, code screenshots, mathematical derivations, data visualizations, tables with meaningful structure, annotated figures, or any non-trivial visual illustration. Do NOT insert administrative or non-course elements (course info slides, polling QR codes, attendance prompts, etc.) even if they contain images.
    - Pure text slides (bullet points, definitions, titles) do not need images — the notes express text better than a screenshot.
-   - **Each image MUST be placed inline, immediately after the paragraph that discusses the concept it illustrates.** NEVER group multiple images together in a cluster. Each image should have explanatory text both above and below it. If there are 5 relevant images in a segment, they should be spread across 5 different locations in the text, each adjacent to the related explanation.
+   - **Each image MUST be placed inline, immediately after the paragraph that directly discusses the concept shown in that image.** Only insert an image when the paragraph above it is actually explaining the same concept the image depicts. If an image does not match any specific paragraph, skip it or move it to a more appropriate location. NEVER group multiple images together.
    - Format for slide images: `![Slide N](images/LXX/slide_NNN.png) *(one-sentence description)*`
    - Format for screen-capture frames: `![Frame N](images/LXX/frame_NNN.png) *(one-sentence description)*`
      (LXX is provided by the caller — do not modify it; the caption must be in parentheses wrapped in asterisks exactly as shown).
@@ -232,7 +126,7 @@ Requirements:
 - Detail level: {detail}/10. {detail_instruction}
 - Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, mathematical derivations, etc.). Skip images of pure text, bullet points, or administrative/non-course elements.
   Copy the exact path from the "Available images" list above (including the images/L** subdirectory). Do not invent paths.
-  **CRITICAL: place each image inline, immediately after the paragraph that explains the concept it illustrates — NEVER cluster multiple images together. Each image must have explanatory text both above and below it.**
+  **CRITICAL: only insert an image directly after a paragraph that discusses the SAME concept the image depicts. The caption must describe what the image shows and connect to the paragraph above. If an image doesn't match any paragraph, skip it. NEVER cluster multiple images together.**
   Format: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
 - Code examples must be complete and compilable (with necessary includes/imports), using the correct language tag (```c, ```cpp, ```python).
 - Only cover the content in this segment; do not introduce material from other lectures.
@@ -254,7 +148,7 @@ Requirements:
 - Detail level: {detail}/10. {detail_instruction}
 - Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, mathematical derivations, etc.). Skip images of pure text, bullet points, or administrative/non-course elements.
   Copy the exact path from the "Available images" list above (including the images/L** subdirectory). Do not invent paths.
-  **CRITICAL: place each image inline, immediately after the paragraph that explains the concept it illustrates — NEVER cluster multiple images together. Each image must have explanatory text both above and below it.**
+  **CRITICAL: only insert an image directly after a paragraph that discusses the SAME concept the image depicts. If an image doesn't match any paragraph, skip it. NEVER cluster multiple images together.**
   Format: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
 - Code examples must be complete and compilable, using the correct language tag (```c, ```cpp, ```python).
 """,
@@ -295,13 +189,20 @@ detail_instructions=[
 }  # end _PROMPTS
 
 
+# Language names for the translation instruction
+_LANG_NAMES = {"en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean"}
+
+
 def _P(key: str) -> str:
-    """Return the prompt string for the current NOTE_LANGUAGE, falling back to English."""
-    return _PROMPTS.get(NOTE_LANGUAGE, _PROMPTS["en"])[key]
+    """Return the English prompt, with a translation instruction appended when
+    NOTE_LANGUAGE is not English.  All intermediate processing (system prompt,
+    chunk prompt, verification) stays in English for best quality; only the
+    final note output is translated word-by-word."""
+    return _PROMPTS["en"][key]
 
 
 def _detail_instr(level: int) -> str:
-    instrs = _PROMPTS.get(NOTE_LANGUAGE, _PROMPTS["en"])["detail_instructions"]
+    instrs = _PROMPTS["en"]["detail_instructions"]
     for rng, txt in instrs:
         if level in rng:
             return txt
@@ -578,6 +479,39 @@ def _get_client_for(model: str):
     if p not in _client_cache:
         _client_cache[p] = _make_client(p)
     return _client_cache[p]
+
+
+def _translate(text: str, lang: str) -> str:
+    """Translate note text to the target language, preserving all Markdown
+    formatting, image references, LaTeX formulas, and code blocks verbatim.
+    Only prose text is translated; technical terms keep English with
+    translation in parentheses on first use."""
+    system = (
+        f"You are a professional translator. Translate English study notes "
+        f"into {lang}. You MUST translate every English sentence into {lang}. "
+        f"Do NOT leave any prose in English. The output must read naturally "
+        f"as {lang} text, not as English with annotations."
+    )
+    prompt = (
+        f"Translate the following study notes entirely into {lang}.\n\n"
+        f"Rules:\n"
+        f"1. Every English sentence must become a {lang} sentence. Do NOT "
+        f"leave English prose — the reader should be able to read the entire "
+        f"note in {lang} without knowing English.\n"
+        f"2. Technical terms: write the {lang} term first, then the English "
+        f"in parentheses on first use. Example for Chinese: 子网掩码 (subnet mask).\n"
+        f"3. Keep EXACTLY as-is without any modification:\n"
+        f"   - Image lines: ![Slide N](path) *(caption)* — translate ONLY "
+        f"the caption text inside *(...)*, keep the path unchanged\n"
+        f"   - LaTeX: $...$ and $$...$$\n"
+        f"   - Code blocks: ```...```\n"
+        f"   - Callout markers: > [!IMPORTANT]\n"
+        f"   - Markdown formatting: ###, **, *, ---, etc.\n"
+        f"4. Do NOT shorten, summarize, or omit any content.\n"
+        f"5. Output ONLY the translated text.\n\n"
+        f"---\n\n{text}"
+    )
+    return _call(NOTE_MODEL, system, prompt, len(text) * 3)
 
 
 def _call(model: str, system: str, user: str, max_tokens: int) -> str:
@@ -894,6 +828,14 @@ def generate_section(
                 draft = v_result
             else:
                 tqdm.write(f"  [warn] Verifier suspicious response, keeping draft")
+
+    # Translate to target language if not English
+    if NOTE_LANGUAGE != "en" and draft:
+        lang = _LANG_NAMES.get(NOTE_LANGUAGE, NOTE_LANGUAGE)
+        tqdm.write(f"     translating to {lang}…")
+        _tt = _time.monotonic()
+        draft = _translate(draft, lang)
+        tqdm.write(f"     ✓ translated ({_time.monotonic()-_tt:.0f}s)")
 
     heading = f"### {lec_num}.{ci} {chunk_title}"
     content = f"{heading}\n\n{draft}"
