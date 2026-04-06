@@ -69,6 +69,7 @@ VERIFY_NOTES      = True
 QUALITY_TARGET    = 8.0
 IMAGE_RENDER_SCALE = 1.5
 NOTE_LANGUAGE     = "en"    # "en" = English | "zh" = Chinese
+SHOW_SCORE        = False   # dev mode: set via --score flag to show self-scoring
 
 CHAPTER_SIZE      = 15      # slides per GPT call
 MAX_TRANSCRIPT_CHARS = 350  # per slide in prompt (saves tokens)
@@ -1147,11 +1148,13 @@ def merge_sections(
     out_path.write_text(full_notes, encoding="utf-8")
     tqdm.write(f"\n  Merged → {out_path}  ({len(full_notes):,} chars)")
 
-    scores = self_score(all_slides, full_notes, all_compact)
-    _print_score(scores, out_path.name)
-    score_path = out_path.with_suffix(".score.json")
-    with open(score_path, "w") as f:
-        json.dump(scores, f, indent=2)
+    scores = {}
+    if SHOW_SCORE:
+        scores = self_score(all_slides, full_notes, all_compact)
+        _print_score(scores, out_path.name)
+        score_path = out_path.with_suffix(".score.json")
+        with open(score_path, "w") as f:
+            json.dump(scores, f, indent=2)
 
     return out_path, scores
 
@@ -1301,11 +1304,13 @@ def generate_per_video_notes(
         note_path.write_text(full_notes, encoding="utf-8")
         tqdm.write(f"  Saved → {note_path}  ({len(full_notes):,} chars)")
 
-        scores = self_score(ld.slides, full_notes, ld.compact_slides)
-        _print_score(scores, note_path.name)
-        score_path = note_path.with_suffix(".score.json")
-        with open(score_path, "w") as f:
-            json.dump(scores, f, indent=2)
+        scores = {}
+        if SHOW_SCORE:
+            scores = self_score(ld.slides, full_notes, ld.compact_slides)
+            _print_score(scores, note_path.name)
+            score_path = note_path.with_suffix(".score.json")
+            with open(score_path, "w") as f:
+                json.dump(scores, f, indent=2)
 
         results.append((note_path, scores))
 
@@ -1517,7 +1522,7 @@ def _discover_lectures(course_dir: Path) -> list[LectureData]:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    global NOTE_LANGUAGE
+    global NOTE_LANGUAGE, SHOW_SCORE
     parser = argparse.ArgumentParser(description="Generate course lecture notes")
     parser.add_argument("--course",      metavar="ID")
     parser.add_argument("--slides",      metavar="PATH")
@@ -1541,7 +1546,12 @@ def main() -> None:
                         choices=["en", "zh"],
                         help="Note language: en (English) or zh (Chinese). "
                              "Overrides the NOTE_LANGUAGE constant.")
+    parser.add_argument("--score",      action="store_true",
+                        help="Enable self-scoring (dev mode: prints coverage/terminology scores)")
     args = parser.parse_args()
+
+    if args.score:
+        SHOW_SCORE = True
 
     if args.language:
         NOTE_LANGUAGE = args.language
