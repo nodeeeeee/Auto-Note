@@ -230,7 +230,10 @@ Write study notes for the following course segment ({course_name} Lecture {lec_n
 Requirements:
 - The section heading for this segment is `### {lec_num}.{chunk_idx} {chunk_title}` (**do not output this line** — it is added by the caller).
 - Detail level: {detail}/10. {detail_instruction}
-- Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, etc.). Skip pure text slides. Copy exact paths from "Available images". CRITICAL: place each image **inline next to the paragraph that explains it** — NEVER cluster multiple images together. Each image must have explanatory text before and after it. Format: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
+- Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, mathematical derivations, etc.). Skip images of pure text, bullet points, or administrative/non-course elements.
+  Copy the exact path from the "Available images" list above (including the images/L** subdirectory). Do not invent paths.
+  **CRITICAL: place each image inline, immediately after the paragraph that explains the concept it illustrates — NEVER cluster multiple images together. Each image must have explanatory text both above and below it.**
+  Format: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
 - Code examples must be complete and compilable (with necessary includes/imports), using the correct language tag (```c, ```cpp, ```python).
 - Only cover the content in this segment; do not introduce material from other lectures.
 """,
@@ -249,7 +252,10 @@ Write study notes for {course_name} Lecture {lec_num}: {lec_title} based on the 
 Requirements:
 - The section heading is `### {lec_num}.{chunk_idx} {chunk_title}` (**do not output this line**).
 - Detail level: {detail}/10. {detail_instruction}
-- Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, etc.). Skip pure text slides. Copy exact paths from "Available images". CRITICAL: place each image **inline next to the paragraph that explains it** — NEVER cluster multiple images together. Format: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
+- Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, mathematical derivations, etc.). Skip images of pure text, bullet points, or administrative/non-course elements.
+  Copy the exact path from the "Available images" list above (including the images/L** subdirectory). Do not invent paths.
+  **CRITICAL: place each image inline, immediately after the paragraph that explains the concept it illustrates — NEVER cluster multiple images together. Each image must have explanatory text both above and below it.**
+  Format: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
 - Code examples must be complete and compilable, using the correct language tag (```c, ```cpp, ```python).
 """,
 verify="""\
