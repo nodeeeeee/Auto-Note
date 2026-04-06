@@ -781,7 +781,7 @@ def generate_section(
         if bar:
             fi = f"F{ld.file_idx} " if ld.file_idx > 1 else ""
             bar.set_postfix_str(f"L{lec_num}{fi}§{ci} cached")
-        return sec_file.read_text(encoding="utf-8")
+        return sec_file.read_text(encoding="utf-8"), False
 
     chunk_title = _chunk_title(chunk)
     fi_tag = f"F{ld.file_idx} " if ld.file_idx > 1 else ""
@@ -841,7 +841,7 @@ def generate_section(
     heading = f"### {lec_num}.{ci} {chunk_title}"
     content = f"{heading}\n\n{draft}"
     sec_file.write_text(content, encoding="utf-8")
-    return content
+    return content, True
 
 
 def generate_lecture(
@@ -856,13 +856,16 @@ def generate_lecture(
     bar: tqdm | None = None,
     force: bool = False,
 ) -> str:
-    """Generate all sections for one lecture, saving each to sections_dir."""
+    """Generate all sections for one lecture, saving each to sections_dir.
+    Returns (merged_text, any_fresh) where any_fresh is True if at least
+    one section was freshly generated (not loaded from cache)."""
     has_transcript = bool(ld.compact_by_idx)
+    any_fresh = False
     chunks = [ld.slides[i:i+CHAPTER_SIZE]
               for i in range(0, len(ld.slides), CHAPTER_SIZE)]
     parts: list[str] = []
     for ci, chunk in enumerate(chunks, start=1):
-        content = generate_section(
+        content, fresh = generate_section(
             lec_num=lec_num,
             lec_title=lec_title,
             course_name=course_name,
@@ -877,9 +880,10 @@ def generate_lecture(
             force=force,
         )
         parts.append(content)
+        any_fresh = any_fresh or fresh
         if bar:
             bar.update(1)
-    return "\n\n".join(parts)
+    return "\n\n".join(parts), any_fresh
 
 
 # ── Self-scoring ──────────────────────────────────────────────────────────────
@@ -1089,6 +1093,7 @@ def merge_sections(
     out_path: Path,
     all_slides: list[SlideInfo],
     all_compact: list[dict],
+    run_image_filter: bool = True,
 ) -> tuple[Path, dict]:
     """Read all saved section files and merge into one final Markdown note."""
     from itertools import groupby
@@ -1141,9 +1146,12 @@ def merge_sections(
              f"categories:\n    - tech\n---\n\n")
     full_notes = front + f"# {course_name} Notes\n\n" + "\n\n------\n\n".join(note_sections)
 
-    # ── Image filter agent pass ────────────────────────────────────────────────
-    tqdm.write("  Running image filter pass…")
-    full_notes, _, _ = filter_images_pass(full_notes, out_path.parent, lectures)
+    # ── Image filter agent pass (only for newly generated content) ─────────────
+    if run_image_filter:
+        tqdm.write("  Running image filter pass…")
+        full_notes, _, _ = filter_images_pass(full_notes, out_path.parent, lectures)
+    else:
+        tqdm.write("  Skipping image filter (all sections from cache).")
 
     out_path.write_text(full_notes, encoding="utf-8")
     tqdm.write(f"\n  Merged → {out_path}  ({len(full_notes):,} chars)")
@@ -1196,10 +1204,11 @@ def generate_course_notes(
                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} sections [{elapsed}<{remaining}]")
 
     # ── Phase 1: generate each section independently ──────────────────────────
+    any_new = False
     for ld in lectures:
         all_slides.extend(ld.slides)
         all_compact.extend(ld.compact_slides)
-        generate_lecture(
+        _, fresh = generate_lecture(
             lec_num=ld.num,
             lec_title=ld.title,
             course_name=course_name,
@@ -1211,6 +1220,7 @@ def generate_course_notes(
             bar=bar,
             force=force,
         )
+        any_new = any_new or fresh
 
     bar.close()
 
@@ -1223,6 +1233,7 @@ def generate_course_notes(
         out_path=out_path,
         all_slides=all_slides,
         all_compact=all_compact,
+        run_image_filter=any_new,
     )
 
 
@@ -1269,8 +1280,9 @@ def generate_per_video_notes(
                   for i in range(0, len(ld.slides), CHAPTER_SIZE)]
 
         parts: list[str] = []
+        any_fresh = False
         for ci, chunk in enumerate(chunks, start=1):
-            content = generate_section(
+            content, fresh = generate_section(
                 lec_num=lec_num,
                 lec_title=lec_title,
                 course_name=course_name,
@@ -1285,6 +1297,7 @@ def generate_per_video_notes(
                 force=force,
             )
             parts.append(content)
+            any_fresh = any_fresh or fresh
             bar.update(1)
         bar.close()
 
@@ -1297,9 +1310,12 @@ def generate_per_video_notes(
         heading = f"# {course_name} — Lecture {lec_num}: {lec_title}\n\n"
         full_notes = front + heading + "\n\n".join(parts)
 
-        # Image filter
-        tqdm.write("  Running image filter pass…")
-        full_notes, _, _ = filter_images_pass(full_notes, out_dir, [ld])
+        # Image filter (only for newly generated content)
+        if any_fresh:
+            tqdm.write("  Running image filter pass…")
+            full_notes, _, _ = filter_images_pass(full_notes, out_dir, [ld])
+        else:
+            tqdm.write("  Skipping image filter (all sections from cache).")
 
         note_path.write_text(full_notes, encoding="utf-8")
         tqdm.write(f"  Saved → {note_path}  ({len(full_notes):,} chars)")
