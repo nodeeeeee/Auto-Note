@@ -306,7 +306,7 @@ class TestAlignSkipLogic:
             with redirect_stdout(buf):
                 sa.process_course("99998", force=False)
             output = buf.getvalue()
-            assert "[skip] Already aligned" in output, (
+            assert "already aligned" in output.lower(), (
                 f"Should have skipped existing alignment, got:\n{output}"
             )
         finally:
@@ -353,7 +353,7 @@ class TestAlignSkipLogic:
             except Exception:
                 pass  # Expected: ML model not available
             output = buf.getvalue()
-            assert "[skip] Already aligned" not in output, (
+            assert "already aligned" not in output.lower(), (
                 f"With force=True, should NOT skip:\n{output}"
             )
         finally:

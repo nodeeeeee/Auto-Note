@@ -1656,6 +1656,27 @@ def process_course(course_id: int | str, use_jina: bool = False,
 
     embedder = None if use_jina else None  # lazy-load only when needed
 
+    # ── Early exit: skip expensive BGE-M3 if all captions are already aligned ─
+    if not force:
+        pending = []
+        for cap in captions:
+            existing = out_dir / f"{cap.stem}.json"
+            if existing.exists():
+                # Check screenshare source — always skip those
+                try:
+                    with open(existing, encoding="utf-8") as _af:
+                        if json.load(_af).get("source") == "screenshare":
+                            continue
+                except Exception:
+                    pass
+                continue  # already aligned
+            pending.append(cap)
+        if not pending:
+            print("  All captions already aligned — nothing to do.")
+            return
+        print(f"  {len(pending)} caption(s) need alignment, {len(captions) - len(pending)} already done.")
+        captions = pending  # only process the pending ones
+
     # ── Pre-compute BGE-M3 matches for efficient video↔slide matching ────────
     bge_matches: dict[str, list[Path]] = {}
     try:
@@ -1663,10 +1684,6 @@ def process_course(course_id: int | str, use_jina: bool = False,
         for stem, rel in raw.items():
             sp = course_dir / rel
             if sp.exists():
-                # Use only the specific file BGE-M3 picked — don't expand to
-                # all files with the same lecture number, as that would include
-                # duplicate versions (annotated, review, with-notes copies) and
-                # degrade alignment quality.
                 bge_matches[stem] = [sp]
         if bge_matches:
             print(f"  [bge-m3] Pre-matched {len(bge_matches)} video(s) to slides")

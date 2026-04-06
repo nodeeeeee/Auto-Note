@@ -141,7 +141,8 @@ class TestVideoClassifier:
         # We can't easily test classify_video without a real video file,
         # but we can test the heuristic logic inline
         img = PILImage.new("RGB", (200, 200), (255, 255, 255))
-        pixels = list(img.getdata())
+        from frame_extractor import _get_pixels
+        pixels = _get_pixels(img)
 
         # Edge ratio for uniform image should be 0
         row_diffs = 0

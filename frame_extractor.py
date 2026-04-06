@@ -66,6 +66,13 @@ MAX_FRAMES = 500
 PAGE_SIMILARITY_THRESHOLD = 45
 
 
+def _get_pixels(img):
+    """Get pixel data from a PIL Image, compatible with Pillow 14+."""
+    if hasattr(img, 'get_flattened_data'):
+        return list(img.get_flattened_data())
+    return _get_pixels(img)
+
+
 # ── Screen vs Camera auto-detection ──────────────────────────────────────────
 
 def classify_video(video_path: Path) -> str:
@@ -121,7 +128,7 @@ def classify_video(video_path: Path) -> str:
 
             # Heuristic 1: Edge density (screen recordings have sharp edges)
             # Use a simple Laplacian-like approach via pixel differences
-            pixels = list(img.getdata())
+            pixels = _get_pixels(img)
             row_diffs = 0
             for y in range(0, h - 1, 4):
                 for x in range(0, w - 1, 4):
@@ -144,7 +151,7 @@ def classify_video(video_path: Path) -> str:
             for by in range(0, h - block_size, block_size):
                 for bx in range(0, w - block_size, block_size):
                     block = img.crop((bx, by, bx + block_size, by + block_size))
-                    block_pixels = list(block.getdata())
+                    block_pixels = _get_pixels(block)
                     r_vals = [p[0] for p in block_pixels]
                     g_vals = [p[1] for p in block_pixels]
                     b_vals = [p[2] for p in block_pixels]
@@ -195,7 +202,7 @@ def _perceptual_hash(img, hash_size: int = 16) -> int:
     """
     from PIL import Image as PILImage
     small = img.convert("L").resize((hash_size + 1, hash_size), PILImage.LANCZOS)
-    pixels = list(small.getdata())
+    pixels = _get_pixels(small)
     w = hash_size + 1
     bits = 0
     for y in range(hash_size):
@@ -218,7 +225,7 @@ def _information_score(img) -> int:
     """
     from PIL import Image as PILImage
     small = img.convert("L").resize((160, 120), PILImage.LANCZOS)
-    pixels = list(small.getdata())
+    pixels = _get_pixels(small)
     w, h = 160, 120
     score = 0
     for y in range(h):
