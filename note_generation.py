@@ -103,7 +103,7 @@ system="""\
 8. 图片插入规则（严格遵守）：
    - **插入且仅插入含视觉元素的图片**：图表、流程图、架构图、代码截图、数学推导、数据可视化等。如果是与课程无关的行政或其他元素（如课程信息、投票二维码、签到提示等），即使是图片也不要插入。
    - 纯文字要点、定义、标题幻灯片不需要插入——笔记本身已用文字表达更好。
-   - 尽可能多地插入含视觉元素的图片，紧跟其说明的概念之后。
+   - **每张图片必须内联放置，紧跟解释该图片概念的段落之后。** 绝对不要将多张图片堆叠在一起。每张图片的上方和下方都应有解释性文字。如果一个片段有 5 张相关图片，它们应分散在文本的 5 个不同位置，各自紧邻相关解释。
    - 幻灯片格式：`![Slide N](images/LXX/slide_NNN.png) *(一句话描述)*`
    - 屏幕录制帧格式：`![Frame N](images/LXX/frame_NNN.png) *(一句话描述)*`
      （LXX 由调用方提供，禁止自行修改）。
@@ -128,7 +128,8 @@ chunk="""\
 - 详细度：{detail}/10。{detail_instruction}
 - 图片插入：**插入所有含视觉元素的图片**（图表、流程图、架构图、代码截图、数学推导、数据可视化等），跳过纯文字截图和与课程无关的行政元素。
   路径必须完全照抄上方「可用图片」列表中给出的路径（含 images/L** 子目录），禁止自造路径。
-  每张图片后加一句斜体括号说明：`![Slide N](path) *(说明)*` 或 `![Frame N](path) *(说明)*`
+  **关键：每张图片必须内联放在解释该概念的段落旁边，绝对不要将多张图片堆在一起。每张图片的上下都应有解释性文字。**
+  格式：`![Slide N](path) *(说明)*` 或 `![Frame N](path) *(说明)*`
 - 代码示例写完整可编译片段（含必要 include/imports），用正确的语言标签（```c, ```cpp, ```python）。
 - 只写本片段内容，不要引入其他讲座的内容
 """,
@@ -149,7 +150,8 @@ slide_only="""\
 - 详细度：{detail}/10。{detail_instruction}
 - 图片插入：**插入所有含视觉元素的图片**（图表、流程图、架构图、代码截图、数学推导、数据可视化等），跳过纯文字截图和与课程无关的行政元素。
   路径必须完全照抄上方「可用图片」列表中给出的路径（含 images/L** 子目录），禁止自造路径。
-  每张图片后加一句斜体括号说明：`![Slide N](path) *(说明)*` 或 `![Frame N](path) *(说明)*`
+  **关键：每张图片必须内联放在解释该概念的段落旁边，绝对不要将多张图片堆在一起。每张图片的上下都应有解释性文字。**
+  格式：`![Slide N](path) *(说明)*` 或 `![Frame N](path) *(说明)*`
 - 代码示例写完整可编译片段，用正确的语言标签（```c, ```cpp, ```python）。
 """,
 verify="""\
@@ -205,7 +207,7 @@ Writing guidelines:
 8. Image insertion rules (strictly follow):
    - **Insert all and only images that contain visual elements**: diagrams, flowcharts, architecture drawings, code screenshots, mathematical derivations, data visualizations, tables with meaningful structure, annotated figures, or any non-trivial visual illustration. Do NOT insert administrative or non-course elements (course info slides, polling QR codes, attendance prompts, etc.) even if they contain images.
    - Pure text slides (bullet points, definitions, titles) do not need images — the notes express text better than a screenshot.
-   - Insert as many visual-element images as are available, immediately after the concept they illustrate.
+   - **Each image MUST be placed inline, immediately after the paragraph that discusses the concept it illustrates.** NEVER group multiple images together in a cluster. Each image should have explanatory text both above and below it. If there are 5 relevant images in a segment, they should be spread across 5 different locations in the text, each adjacent to the related explanation.
    - Format for slide images: `![Slide N](images/LXX/slide_NNN.png) *(one-sentence description)*`
    - Format for screen-capture frames: `![Frame N](images/LXX/frame_NNN.png) *(one-sentence description)*`
      (LXX is provided by the caller — do not modify it; the caption must be in parentheses wrapped in asterisks exactly as shown).
@@ -228,7 +230,7 @@ Write study notes for the following course segment ({course_name} Lecture {lec_n
 Requirements:
 - The section heading for this segment is `### {lec_num}.{chunk_idx} {chunk_title}` (**do not output this line** — it is added by the caller).
 - Detail level: {detail}/10. {detail_instruction}
-- Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, mathematical derivations, etc.). Skip images of pure text, bullet points, or administrative/non-course elements. Copy the exact path from the "Available images" list (including the images/L** subdirectory). Do not invent paths. After each image, add a one-sentence italic caption: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
+- Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, etc.). Skip pure text slides. Copy exact paths from "Available images". CRITICAL: place each image **inline next to the paragraph that explains it** — NEVER cluster multiple images together. Each image must have explanatory text before and after it. Format: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
 - Code examples must be complete and compilable (with necessary includes/imports), using the correct language tag (```c, ```cpp, ```python).
 - Only cover the content in this segment; do not introduce material from other lectures.
 """,
@@ -247,7 +249,7 @@ Write study notes for {course_name} Lecture {lec_num}: {lec_title} based on the 
 Requirements:
 - The section heading is `### {lec_num}.{chunk_idx} {chunk_title}` (**do not output this line**).
 - Detail level: {detail}/10. {detail_instruction}
-- Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, etc.). Skip images of pure text or administrative/non-course elements. Copy the exact path from the "Available images" list (including the images/L** subdirectory). Do not invent paths. After each image, add a one-sentence italic caption: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
+- Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, etc.). Skip pure text slides. Copy exact paths from "Available images". CRITICAL: place each image **inline next to the paragraph that explains it** — NEVER cluster multiple images together. Format: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
 - Code examples must be complete and compilable, using the correct language tag (```c, ```cpp, ```python).
 """,
 verify="""\
