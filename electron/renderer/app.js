@@ -1109,6 +1109,8 @@ const CONSTANTS_DEF = [
     // ── Mistral ─────────────────────────────────────────────────────────
     ['Mistral Large','mistral-large-latest'],['Mistral Medium','mistral-medium-latest'],
     ['Mistral Small','mistral-small-latest'],['Codestral','codestral-latest'],
+    // ── Claude CLI (uses `claude -p`, no API key needed) ────────────────
+    ['Claude CLI (local)','claude-cli'],
   ]],
   ['generate', 'VERIFY_MODEL', 'Verification LLM', 'gpt-4.1-mini', [
     // ── OpenAI ──────────────────────────────────────────────────────────

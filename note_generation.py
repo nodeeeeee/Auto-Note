@@ -414,6 +414,8 @@ def _max_tokens(level: int) -> int:
 # ── Multi-provider LLM helpers ────────────────────────────────────────────────
 
 def _provider(model: str) -> str:
+    if model == "claude-cli":
+        return "claude-cli"
     if model.startswith("gemini"):
         return "gemini"
     if model.startswith("claude"):
@@ -517,11 +519,28 @@ def _translate(text: str, lang: str) -> str:
 
 def _call(model: str, system: str, user: str, max_tokens: int,
           _truncated: list | None = None) -> str:
-    """Call any supported LLM (OpenAI, Gemini, Anthropic) with a text prompt.
+    """Call any supported LLM (OpenAI, Gemini, Anthropic, or Claude CLI).
 
     If *_truncated* is a list, appends True/False to indicate whether the
     response was cut short by the token limit.
     """
+    # ── Claude CLI mode: call `claude -p` as subprocess ──────────────────
+    if _provider(model) == "claude-cli":
+        import subprocess as _sp
+        cmd = ["claude", "-p", "--output-format", "text"]
+        if system:
+            cmd.extend(["--system-prompt", system])
+        result = _sp.run(
+            cmd, input=user, capture_output=True, text=True,
+            timeout=300,
+        )
+        content = result.stdout.strip()
+        if _truncated is not None:
+            _truncated.append(False)  # CLI handles its own limits
+        if result.returncode != 0 and not content:
+            raise RuntimeError(f"claude -p failed (code {result.returncode}): {result.stderr[:500]}")
+        return content
+
     client = _get_client_for(model)
 
     if _provider(model) == "anthropic":
@@ -1610,7 +1629,7 @@ def _discover_lectures(course_dir: Path) -> list[LectureData]:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    global NOTE_LANGUAGE, SHOW_SCORE
+    global NOTE_LANGUAGE, SHOW_SCORE, NOTE_MODEL
     parser = argparse.ArgumentParser(description="Generate course lecture notes")
     parser.add_argument("--course",      metavar="ID")
     parser.add_argument("--slides",      metavar="PATH")
@@ -1636,10 +1655,17 @@ def main() -> None:
                              "Overrides the NOTE_LANGUAGE constant.")
     parser.add_argument("--score",      action="store_true",
                         help="Enable self-scoring (dev mode: prints coverage/terminology scores)")
+    parser.add_argument("--model",      metavar="MODEL", default=None,
+                        help="Override NOTE_MODEL (e.g. claude-cli, gemini-2.5-flash)")
     args = parser.parse_args()
 
     if args.score:
         SHOW_SCORE = True
+
+    if args.model:
+        global NOTE_MODEL
+        NOTE_MODEL = args.model
+        print(f"Note model: {NOTE_MODEL}")
 
     if args.language:
         NOTE_LANGUAGE = args.language
