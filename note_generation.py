@@ -660,6 +660,10 @@ def _clean_artifacts(text: str) -> str:
         # Remove verify prompt leaks
         if "reply APPROVED (this word only)" in stripped:
             continue
+        if "return the corrected full note excerpt" in stripped:
+            continue
+        if "terminology or factual errors" in stripped:
+            continue
         # Clean section-header artifacts
         line = re.sub(r"##\s*NUS Confidential\s*##", "", line)
         line = re.sub(r"[©(]\s*c?\)?\s*CS\d+", "", line)
