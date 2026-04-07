@@ -648,8 +648,29 @@ def render_slide_images(slide_path: Path, out_dir: Path,
 
 # ── Chunk helpers ─────────────────────────────────────────────────────────────
 
+def _clean_artifacts(text: str) -> str:
+    """Remove pipeline artifacts that may leak into generated notes."""
+    lines = text.splitlines()
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        # Remove bare "APPROVED" lines (verifier leak)
+        if stripped == "APPROVED":
+            continue
+        # Remove verify prompt leaks
+        if "reply APPROVED (this word only)" in stripped:
+            continue
+        # Clean section-header artifacts
+        line = re.sub(r"##\s*NUS Confidential\s*##", "", line)
+        line = re.sub(r"[©(]\s*c?\)?\s*CS\d+", "", line)
+        cleaned.append(line)
+    return "\n".join(cleaned)
+
+
 _BAD_LABEL = re.compile(
-    r"^\s*(\d+|[A-Z]{2,4}\d{4}[\s\-].*|CS\d+.*|AY\d+.*|\[.*\])\s*$"
+    r"^\s*(\d+|[A-Z]{2,4}\d{4}[\s\-].*|CS\d+.*|AY\d+.*|\[.*\]|"
+    r".*NUS Confidential.*|.*©\s*CS\d+.*|\(c\)\s*CS\d+.*|Page\s+\d+)\s*$",
+    re.IGNORECASE,
 )
 
 def _chunk_title(slides_in_chunk: list[SlideInfo]) -> str:
@@ -677,7 +698,10 @@ def _chunk_title(slides_in_chunk: list[SlideInfo]) -> str:
     for s in slides_in_chunk:
         if _is_good(s.label):
             return s.label
-    return slides_in_chunk[0].label
+    # Last resort: use slide range as title instead of a bad label
+    first = slides_in_chunk[0].index + 1
+    last  = slides_in_chunk[-1].index + 1
+    return f"Slides {first}–{last}" if first != last else f"Slide {first}"
 
 
 def _build_chunk_prompt(
@@ -845,6 +869,9 @@ def generate_section(
                 draft = v_result
             else:
                 tqdm.write(f"  [warn] Verifier suspicious response, keeping draft")
+
+    # Strip pipeline artifacts that may have leaked into the draft
+    draft = _clean_artifacts(draft)
 
     # Translate to target language if not English
     if NOTE_LANGUAGE != "en" and draft:
@@ -1270,11 +1297,14 @@ def generate_per_video_notes(
     fmt: str = OUTPUT_FORMAT,
     force: bool = False,
 ) -> list[tuple[Path, dict]]:
-    """Generate one note file per lecture/video instead of a single merged file.
+    """Generate one note file per lecture number instead of a single merged file.
 
-    Each video gets its own Markdown file: <course>_L<N>_notes.md
+    Lectures sharing the same lecture number (multi-part) are merged into
+    one file: <course>_L<N>_notes.md.
     Returns a list of (path, scores) tuples for each generated note.
     """
+    from itertools import groupby
+
     out_dir.mkdir(parents=True, exist_ok=True)
     sections_dir = out_dir / "sections"
     sections_dir.mkdir(exist_ok=True)
@@ -1286,62 +1316,70 @@ def generate_per_video_notes(
 
     results: list[tuple[Path, dict]] = []
 
-    for ld in lectures:
-        lec_num = ld.num
-        lec_title = ld.title
+    for lec_num, ld_iter in groupby(lectures, key=lambda x: x.num):
+        ld_group = list(ld_iter)
+        multi_part = len(ld_group) > 1
         ext = ".mdx" if fmt == "mdx" else ".md"
         note_path = out_dir / f"{course_name}_L{lec_num:02d}_notes{ext}"
 
-        tqdm.write(f"\n  ═══ Lecture {lec_num}: {lec_title} ═══")
-
-        n_chunks = max(1, (len(ld.slides) + CHAPTER_SIZE - 1) // CHAPTER_SIZE)
-        bar = tqdm(total=n_chunks, desc=f"L{lec_num}", unit="section",
-                   bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
-
-        has_transcript = bool(ld.compact_by_idx)
-        chunks = [ld.slides[i:i + CHAPTER_SIZE]
-                  for i in range(0, len(ld.slides), CHAPTER_SIZE)]
-
-        parts: list[str] = []
+        all_parts: list[str] = []
         any_fresh = False
-        for ci, chunk in enumerate(chunks, start=1):
-            content, fresh = generate_section(
-                lec_num=lec_num,
-                lec_title=lec_title,
-                course_name=course_name,
-                chunk=chunk,
-                ci=ci,
-                ld=ld,
-                out_dir=out_dir,
-                sections_dir=sections_dir,
-                detail=detail,
-                has_transcript=has_transcript,
-                bar=bar,
-                force=force,
-            )
-            parts.append(content)
-            any_fresh = any_fresh or fresh
-            bar.update(1)
-        bar.close()
+        source_lines: list[str] = []
 
-        # Build per-video note with source info
+        for part_idx, ld in enumerate(ld_group, 1):
+            lec_title = ld.title
+            part_label = f" (Part {part_idx})" if multi_part else ""
+            tqdm.write(f"\n  ═══ Lecture {lec_num}{part_label}: {lec_title} ═══")
+
+            n_chunks = max(1, (len(ld.slides) + CHAPTER_SIZE - 1) // CHAPTER_SIZE)
+            bar = tqdm(total=n_chunks, desc=f"L{lec_num}{part_label}",
+                       unit="section",
+                       bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
+
+            has_transcript = bool(ld.compact_by_idx)
+            chunks = [ld.slides[i:i + CHAPTER_SIZE]
+                      for i in range(0, len(ld.slides), CHAPTER_SIZE)]
+
+            for ci, chunk in enumerate(chunks, start=1):
+                content, fresh = generate_section(
+                    lec_num=lec_num,
+                    lec_title=lec_title,
+                    course_name=course_name,
+                    chunk=chunk,
+                    ci=ci,
+                    ld=ld,
+                    out_dir=out_dir,
+                    sections_dir=sections_dir,
+                    detail=detail,
+                    has_transcript=has_transcript,
+                    bar=bar,
+                    force=force,
+                )
+                all_parts.append(content)
+                any_fresh = any_fresh or fresh
+                bar.update(1)
+            bar.close()
+
+            # Source metadata for this part
+            video_name = ld.compact.get("lecture", ld.slide_path.stem)
+            slide_file = ld.slide_path.name if ld.source != "screenshare" else "(screen recording frames)"
+            source_lines.append(f"- **Video**: {video_name} | **Slides**: {slide_file}")
+
+        # Build per-lecture note
         from datetime import datetime
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+08:00")
-        # Source metadata: video name and slide file
-        video_name = ld.compact.get("lecture", ld.slide_path.stem)
-        slide_file = ld.slide_path.name if ld.source != "screenshare" else "(screen recording frames)"
-        source_info = f"- **Video**: {video_name}\n- **Slides**: {slide_file}\n\n---\n\n"
+        source_info = "\n".join(source_lines) + "\n\n---\n\n"
 
         front = (f"---\ntitle: {course_name} — Lecture {lec_num}\ndate: {now}\n"
                  f"description: Lecture notes generated by auto_note\n"
                  f"categories:\n    - tech\n---\n\n")
-        heading = f"# {course_name} — Lecture {lec_num}: {lec_title}\n\n"
-        full_notes = front + heading + source_info + "\n\n".join(parts)
+        heading = f"# {course_name} — Lecture {lec_num}: {ld_group[0].title}\n\n"
+        full_notes = front + heading + source_info + "\n\n".join(all_parts)
 
         # Image filter (only for newly generated content)
         if any_fresh:
             tqdm.write("  Running image filter pass…")
-            full_notes, _, _ = filter_images_pass(full_notes, out_dir, [ld])
+            full_notes, _, _ = filter_images_pass(full_notes, out_dir, ld_group)
         else:
             tqdm.write("  Skipping image filter (all sections from cache).")
 
@@ -1350,7 +1388,9 @@ def generate_per_video_notes(
 
         scores = {}
         if SHOW_SCORE:
-            scores = self_score(ld.slides, full_notes, ld.compact_slides)
+            all_slides = [s for ld in ld_group for s in ld.slides]
+            all_compact = [c for ld in ld_group for c in ld.compact_slides]
+            scores = self_score(all_slides, full_notes, all_compact)
             _print_score(scores, note_path.name)
             score_path = note_path.with_suffix(".score.json")
             with open(score_path, "w") as f:

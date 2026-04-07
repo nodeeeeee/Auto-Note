@@ -382,10 +382,10 @@ class TestChunkTitle:
         ]
         assert _chunk_title(slides) == "Process Management"
 
-    def test_fallback_to_first(self):
+    def test_fallback_to_slide_range(self):
         from note_generation import _chunk_title, SlideInfo
         slides = [SlideInfo(0, "42", "...")]
-        assert _chunk_title(slides) == "42"
+        assert _chunk_title(slides) == "Slide 1"  # bad label → falls back to slide number
 
 
 class TestImageRefPattern:
