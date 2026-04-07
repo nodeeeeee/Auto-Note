@@ -370,9 +370,10 @@ class TestNoteGenerationSkipLogic:
         sections_dir = tmp_path / "sections"
         sections_dir.mkdir()
 
-        # Create a cached section file
+        # Create a cached section file (must be > 500 bytes to pass cache check)
         sec_file = _section_path(sections_dir, 1, 1, 1)
-        sec_file.write_text("### 1.1 Cached Content\n\nThis was previously generated.")
+        content = "### 1.1 Cached Content\n\n" + ("This was previously generated. " * 30)
+        sec_file.write_text(content)
 
         assert sec_file.exists()
         assert sec_file.stat().st_size > 50

@@ -777,7 +777,7 @@ def generate_section(
     """Generate (or load from cache) one section and save it to sections_dir."""
     sec_file = _section_path(sections_dir, lec_num, ci, ld.file_idx)
 
-    if not force and sec_file.exists() and sec_file.stat().st_size > 50:
+    if not force and sec_file.exists() and sec_file.stat().st_size > 500:
         if bar:
             fi = f"F{ld.file_idx} " if ld.file_idx > 1 else ""
             bar.set_postfix_str(f"L{lec_num}{fi}§{ci} cached")
@@ -813,8 +813,10 @@ def generate_section(
     draft = _call(NOTE_MODEL, _P("system"), user, _max_tokens(detail))
     tqdm.write(f"     ✓ {len(draft):,} chars  ({_time.monotonic()-_t0:.0f}s)")
 
-    if not draft:
-        tqdm.write(f"  [warn] Empty draft for L{lec_num} §{ci} — skipping")
+    if not draft or len(draft.strip()) < 100:
+        tqdm.write(f"  [warn] Empty or too-short draft for L{lec_num} §{ci} — not caching")
+        heading = f"### {lec_num}.{ci} {_chunk_title(chunk)}"
+        return f"{heading}\n\n*(Section could not be generated — re-run with force to retry.)*", True
 
     if VERIFY_NOTES and draft:
         terms = set()
@@ -1111,7 +1113,7 @@ def merge_sections(
             file_parts: list[str] = []
             for ci in range(1, n_chunks + 1):
                 sec_file = _section_path(sections_dir, ld.num, ci, ld.file_idx)
-                if sec_file.exists() and sec_file.stat().st_size > 50:
+                if sec_file.exists() and sec_file.stat().st_size > 500:
                     file_parts.append(sec_file.read_text(encoding="utf-8"))
                 else:
                     fi = f" F{ld.file_idx}" if multi_file else ""
@@ -1414,7 +1416,7 @@ def _discover_screenshare_lectures(course_dir: Path) -> list[LectureData]:
         # Check for alignment
         align_path = course_dir / "alignment" / f"{fdir.name}.json"
         align = align_path if align_path.exists() else None
-        # Verify alignment source is screenshare
+        # Verify alignment source is screenshare — skip if not
         if align:
             try:
                 with open(align, encoding="utf-8") as f:
@@ -1422,7 +1424,7 @@ def _discover_screenshare_lectures(course_dir: Path) -> list[LectureData]:
                 if data.get("source") != "screenshare":
                     continue  # This alignment is from traditional slide matching
             except Exception:
-                pass
+                continue  # Corrupted alignment — skip, don't include
         else:
             continue  # No alignment yet — need frame_extractor to run first
 
