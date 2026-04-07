@@ -515,8 +515,13 @@ def _translate(text: str, lang: str) -> str:
     return _call(NOTE_MODEL, system, prompt, len(text) * 3)
 
 
-def _call(model: str, system: str, user: str, max_tokens: int) -> str:
-    """Call any supported LLM (OpenAI, Gemini, Anthropic) with a text prompt."""
+def _call(model: str, system: str, user: str, max_tokens: int,
+          _truncated: list | None = None) -> str:
+    """Call any supported LLM (OpenAI, Gemini, Anthropic) with a text prompt.
+
+    If *_truncated* is a list, appends True/False to indicate whether the
+    response was cut short by the token limit.
+    """
     client = _get_client_for(model)
 
     if _provider(model) == "anthropic":
@@ -525,6 +530,8 @@ def _call(model: str, system: str, user: str, max_tokens: int) -> str:
         if system:
             kwargs["system"] = system
         r = client.messages.create(**kwargs)
+        if _truncated is not None:
+            _truncated.append(r.stop_reason == "max_tokens")
         return r.content[0].text.strip() if r.content else ""
 
     # OpenAI-compatible (OpenAI + Gemini via OpenAI compat layer)
@@ -538,6 +545,9 @@ def _call(model: str, system: str, user: str, max_tokens: int) -> str:
         try:
             r = client.chat.completions.create(
                 model=model, messages=msgs, **{tok: max_tokens})
+            if _truncated is not None:
+                reason = getattr(r.choices[0], "finish_reason", None)
+                _truncated.append(reason == "length")
             content = r.choices[0].message.content
             return content.strip() if content else ""
         except Exception as e:
@@ -810,8 +820,12 @@ def generate_section(
 
     import time as _time
     _t0 = _time.monotonic()
-    draft = _call(NOTE_MODEL, _P("system"), user, _max_tokens(detail))
-    tqdm.write(f"     ✓ {len(draft):,} chars  ({_time.monotonic()-_t0:.0f}s)")
+    _trunc_flag: list[bool] = []
+    draft = _call(NOTE_MODEL, _P("system"), user, _max_tokens(detail),
+                  _truncated=_trunc_flag)
+    was_truncated = _trunc_flag and _trunc_flag[0]
+    tqdm.write(f"     ✓ {len(draft):,} chars  ({_time.monotonic()-_t0:.0f}s)"
+               + ("  [TRUNCATED]" if was_truncated else ""))
 
     if not draft or len(draft.strip()) < 100:
         tqdm.write(f"  [warn] Empty or too-short draft for L{lec_num} §{ci} — not caching")
@@ -842,7 +856,10 @@ def generate_section(
 
     heading = f"### {lec_num}.{ci} {chunk_title}"
     content = f"{heading}\n\n{draft}"
-    sec_file.write_text(content, encoding="utf-8")
+    if was_truncated:
+        tqdm.write(f"  [warn] Section L{lec_num} §{ci} was truncated by token limit — not caching")
+    else:
+        sec_file.write_text(content, encoding="utf-8")
     return content, True
 
 
