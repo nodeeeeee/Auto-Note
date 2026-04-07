@@ -1489,17 +1489,17 @@ async function attachPageHandlers() {
         if (stealth) c.push('--secretly');
         chain.push(['Download videos', c]);
       }
-      if (steps.includes('transcribe')) {
-        const c = [python, paths.transcribe];
+      if (steps.includes('transcribe') || steps.includes('align')) {
+        // Pipelined: transcribe → extract frames → align per video
+        // Uses threading so transcription of video N+1 overlaps with
+        // frame extraction of video N.
+        const c = [python, paths.pipeline_worker, '--course', cid, '--path', outDir];
         if (force) c.push('--force');
-        chain.push(['Transcribe', c]);
-      }
-      if (steps.includes('align')) {
-        // Extract frames from screenshare videos before slide-based alignment
-        chain.push(['Extract frames', [python, paths.frame_extractor, '--course', cid, '--path', outDir]]);
-        const c = [python, paths.align, '--course', cid];
-        if (force) c.push('--force');
-        chain.push(['Align', c]);
+        if (!steps.includes('transcribe')) {
+          // User only selected align — still need to run pipeline worker
+          // (it skips already-transcribed videos)
+        }
+        chain.push(['Transcribe + Align', c]);
       }
       if (steps.includes('generate')) {
         const c = [python, paths.generate, '--course', cid, '--course-name', name || courseNameFromId(cid), '--detail', detail, '--language', lang, '--per-video'];

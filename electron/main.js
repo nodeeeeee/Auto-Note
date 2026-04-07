@@ -61,6 +61,7 @@ const SCRIPTS = {
   downloader:      scriptPath('downloader.py'),
   transcribe:      scriptPath('extract_caption.py'),
   frame_extractor: scriptPath('frame_extractor.py'),
+  pipeline_worker: scriptPath('pipeline_worker.py'),
   align:           scriptPath('semantic_alignment.py'),
   generate:        scriptPath('note_generation.py'),
 };
