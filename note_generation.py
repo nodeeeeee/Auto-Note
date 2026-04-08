@@ -532,7 +532,7 @@ def _call(model: str, system: str, user: str, max_tokens: int,
             cmd.extend(["--system-prompt", system])
         result = _sp.run(
             cmd, input=user, capture_output=True, text=True,
-            timeout=300,
+            timeout=600,
         )
         content = result.stdout.strip()
         if _truncated is not None:
@@ -886,7 +886,8 @@ def generate_section(
                 terms.add(t)
         term_list = ", ".join(sorted(terms)[:30])
         v_user = _P("verify").format(term_list=term_list, draft=draft[:2500])
-        v_result = _call(VERIFY_MODEL, "", v_user, 1500)
+        _vmodel = NOTE_MODEL if NOTE_MODEL == "claude-cli" else VERIFY_MODEL
+        v_result = _call(_vmodel, "", v_user, 1500)
         if not v_result.strip().upper().startswith("APPROVED"):
             if len(v_result) > len(draft) * 0.3:
                 draft = v_result
