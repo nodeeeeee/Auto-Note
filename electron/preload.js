@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // ── Venv / Python ─────────────────────────────────────────────────────────
   getVenvStatus:  ()     => ipcRenderer.invoke('venv:status'),
+  checkEnv:       ()     => ipcRenderer.invoke('env:check'),
   getPythonPath:  ()     => ipcRenderer.invoke('python:path'),
 
   // ── Script constants (Settings) ───────────────────────────────────────────

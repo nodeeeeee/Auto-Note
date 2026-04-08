@@ -50,7 +50,8 @@
     "nsis": {
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "AutoNote"
+      "shortcutName": "AutoNote",
+      "include": "build/uninstaller.nsh"
     },
     "appx": {
       "displayName": "AutoNote",

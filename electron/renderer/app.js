@@ -1898,25 +1898,143 @@ document.getElementById('term-clear')?.addEventListener('click', () => {
 });
 
 // ── Initial load ───────────────────────────────────────────────────────────────
-async function init() {
-  // Load output dir once so it's available for command building
+// ── First-start setup wizard ─────────────────────────────────────────────────
+
+function buildSetupWizard(components) {
+  const comps = Object.entries(components);
+  let checkboxes = '';
+  for (const [key, comp] of comps) {
+    const checked = comp.required ? 'checked disabled' : 'checked';
+    const tag = comp.required ? ' <span style="color:var(--c-primary);font-size:11px">(required)</span>' : '';
+    const note = comp.note ? `<div style="font-size:10px;color:var(--c-white-35);margin-left:28px">${esc(comp.note)}</div>` : '';
+    checkboxes += `
+      <label class="checkbox-row" style="margin-top:6px">
+        <input type="checkbox" id="setup-comp-${key}" ${checked}>
+        <span>${esc(comp.label)}${tag}</span>
+      </label>${note}`;
+  }
+
+  return `
+    <div style="max-width:560px;margin:40px auto;padding:0 20px">
+      <div style="text-align:center;margin-bottom:24px">
+        <div style="font-size:28px;font-weight:700;color:var(--c-primary)">AutoNote</div>
+        <div style="color:var(--c-white-60);margin-top:8px">First-time setup</div>
+      </div>
+      ${mkCard(`
+        <div style="margin-bottom:12px;color:var(--c-white-88)">
+          AutoNote needs a Python ML environment to transcribe videos, align
+          transcripts to slides, and generate notes. This is a one-time setup
+          that takes about 10 minutes.
+        </div>
+        <hr class="divider">
+        <span class="label" style="margin-bottom:8px;display:block">Components to install</span>
+        ${checkboxes}
+        <hr class="divider">
+        <div id="setup-log" style="display:none">
+          <div style="font-size:11px;color:var(--c-white-45);margin-bottom:4px">Installation progress</div>
+          <pre id="setup-output" style="background:var(--c-output-bg);color:var(--c-white-60);padding:10px;border-radius:4px;max-height:200px;overflow-y:auto;font-size:11px;white-space:pre-wrap;margin:0"></pre>
+        </div>
+        <div class="row" style="margin-top:16px;justify-content:center">
+          <button class="btn-primary" id="setup-install-btn">Install and Continue</button>
+          <button class="btn-outline" id="setup-skip-btn">Skip for now</button>
+        </div>
+      `)}
+    </div>`;
+}
+
+async function showSetupWizard() {
+  const components = await window.api.getInstallComponents();
+  const el = document.getElementById('page-content') || document.body;
+
+  // Hide nav rail during setup
+  const rail = document.getElementById('rail');
+  if (rail) rail.style.display = 'none';
+
+  el.innerHTML = buildSetupWizard(components);
+
+  document.getElementById('setup-install-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('setup-install-btn');
+    const skipBtn = document.getElementById('setup-skip-btn');
+    const log = document.getElementById('setup-log');
+    const output = document.getElementById('setup-output');
+    btn.disabled = true;
+    btn.textContent = 'Installing…';
+    if (skipBtn) skipBtn.style.display = 'none';
+    if (log) log.style.display = 'block';
+
+    // Collect selected components
+    const selected = [];
+    for (const key of Object.keys(components)) {
+      const cb = document.getElementById(`setup-comp-${key}`);
+      if (cb && cb.checked) selected.push(key);
+    }
+
+    // Find system Python
+    const basePython = null; // let installer auto-detect
+
+    window.api.offInstallEvents();
+    window.api.onInstallData(text => {
+      if (output) {
+        output.textContent += text;
+        output.scrollTop = output.scrollHeight;
+      }
+    });
+    window.api.onInstallDone(result => {
+      window.api.offInstallEvents();
+      if (result?.code === 0) {
+        btn.textContent = 'Setup complete!';
+        btn.className = 'btn-primary';
+        setTimeout(() => enterMainApp(), 1000);
+      } else {
+        btn.textContent = 'Retry Install';
+        btn.disabled = false;
+        if (skipBtn) skipBtn.style.display = '';
+      }
+    });
+
+    await window.api.startInstall(basePython, selected);
+  });
+
+  document.getElementById('setup-skip-btn')?.addEventListener('click', () => {
+    enterMainApp();
+  });
+}
+
+async function enterMainApp() {
+  // Show nav rail
+  const rail = document.getElementById('rail');
+  if (rail) rail.style.display = '';
+
+  // Normal init flow
   try {
     State.outputDir = await window.api.getOutputDir();
   } catch {}
 
-  // Fetch courses
   const result = await window.api.fetchCourses().catch(() => ({ courses: [] }));
   State.courses = result?.courses || [];
 
-  // If no courses loaded (not configured yet), start on Settings so the user
-  // can enter their Canvas URL/token without having to click through the empty Dashboard.
   if (State.courses.length === 0) {
     State.currentPage = 6;
   }
 
-  // Build UI
   buildNav();
   renderPage();
+}
+
+async function init() {
+  // Check if ML environment is ready
+  try {
+    const env = await window.api.checkEnv();
+    if (env.needsSetup) {
+      await showSetupWizard();
+      return;
+    }
+  } catch {
+    // checkEnv not available (older main.js) — skip check
+  }
+
+  // Environment is ready — enter main app directly
+  await enterMainApp();
 }
 
 init().catch(err => {

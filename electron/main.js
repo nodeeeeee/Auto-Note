@@ -984,6 +984,25 @@ function registerIpc() {
     path: VENV_PYTHON,
   }));
 
+  // Environment readiness check for first-start wizard
+  ipcMain.handle('env:check', () => {
+    const hasPython = fs.existsSync(VENV_PYTHON);
+    // Check if core packages are importable
+    let coreOk = false;
+    if (hasPython) {
+      try {
+        const r = spawnSync(VENV_PYTHON, ['-c', 'import tqdm, requests, openai; print("ok")'],
+                            { timeout: 10000, windowsHide: true });
+        coreOk = (r.status === 0 && (r.stdout || '').toString().includes('ok'));
+      } catch {}
+    }
+    return {
+      pythonFound: hasPython,
+      coreInstalled: coreOk,
+      needsSetup: !hasPython || !coreOk,
+    };
+  });
+
   ipcMain.handle('python:path',     ()       => getPythonPath());
 
   ipcMain.handle('constants:get',   (_, { key, name })         => readConstant(key, name));
