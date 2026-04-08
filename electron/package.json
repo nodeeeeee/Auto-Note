@@ -44,13 +44,21 @@
       }
     },
     "win": {
-      "target": "nsis",
+      "target": ["nsis", "appx"],
       "icon": "../assets/icon.ico"
     },
     "nsis": {
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "AutoNote"
+    },
+    "appx": {
+      "displayName": "AutoNote",
+      "identityName": "AutoNote",
+      "publisher": "CN=nodeeeeee",
+      "publisherDisplayName": "nodeeeeee",
+      "applicationId": "AutoNote",
+      "languages": ["en-US", "zh-CN"]
     },
     "mac": {
       "target": {
