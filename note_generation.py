@@ -999,6 +999,8 @@ def generate_lecture(
     # independent.  claude-cli spawns subprocesses (I/O bound, not CPU bound),
     # so we can run many concurrently just like API calls.
     PARALLEL_SECTIONS = 6
+    tqdm.write(f"  [{len(chunks)} chunks, {PARALLEL_SECTIONS} workers → "
+               f"{'parallel' if len(chunks) > 1 else 'sequential'}]")
     if len(chunks) <= 1 or PARALLEL_SECTIONS <= 1:
         # Sequential fallback for single-section lectures
         parts: list[str] = []
@@ -1453,28 +1455,14 @@ def generate_per_video_notes(
                        unit="section",
                        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
 
-            has_transcript = bool(ld.compact_by_idx)
-            chunks = [ld.slides[i:i + CHAPTER_SIZE]
-                      for i in range(0, len(ld.slides), CHAPTER_SIZE)]
-
-            for ci, chunk in enumerate(chunks, start=1):
-                content, fresh = generate_section(
-                    lec_num=lec_num,
-                    lec_title=lec_title,
-                    course_name=course_name,
-                    chunk=chunk,
-                    ci=ci,
-                    ld=ld,
-                    out_dir=out_dir,
-                    sections_dir=sections_dir,
-                    detail=detail,
-                    has_transcript=has_transcript,
-                    bar=bar,
-                    force=force,
-                )
-                all_parts.append(content)
-                any_fresh = any_fresh or fresh
-                bar.update(1)
+            text, fresh = generate_lecture(
+                lec_num=lec_num, lec_title=lec_title,
+                course_name=course_name, ld=ld, out_dir=out_dir,
+                sections_dir=sections_dir, detail=detail, fmt=fmt,
+                bar=bar, force=force,
+            )
+            all_parts.append(text)
+            any_fresh = any_fresh or fresh
             bar.close()
 
             # Source metadata for this part
