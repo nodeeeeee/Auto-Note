@@ -72,7 +72,7 @@ NOTE_LANGUAGE     = "en"    # "en" = English | "zh" = Chinese
 SHOW_SCORE        = False   # dev mode: set via --score flag to show self-scoring
 
 CHAPTER_SIZE      = 15      # slides per GPT call
-MAX_TRANSCRIPT_CHARS = 350  # per slide in prompt (saves tokens)
+MAX_TRANSCRIPT_CHARS = 800  # per slide in prompt — transcript is the primary source
 
 SCORE_WEIGHTS = {"coverage": 0.30, "terminology": 0.35,
                  "callouts": 0.15, "code_blocks": 0.20}
@@ -111,18 +111,19 @@ Writing guidelines:
 chunk="""\
 Write study notes for the following course segment ({course_name} Lecture {lec_num}: {lec_title}).
 
-## Slide list for this segment
-{slide_outline}
-
-## Lecture audio transcript (ordered by slide)
+## Lecture audio transcript (PRIMARY SOURCE — this is the main content to cover)
 {transcript_block}
 
-## Available images (slides with diagrams / code screenshots)
+## Slide outline (structural guide — use for topic organization)
+{slide_outline}
+
+## Available images (insert relevant ones inline)
 {image_hints}
 
 ---
 
 Requirements:
+- The **transcript is the primary source material**. Cover ALL concepts, explanations, examples, and details the lecturer discusses. The slide outline is a structural guide for organizing topics, but the transcript contains the actual teaching content.
 - The section heading for this segment is `### {lec_num}.{chunk_idx} {chunk_title}` (**do not output this line** — it is added by the caller).
 - Detail level: {detail}/10. {detail_instruction}
 - Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, mathematical derivations, etc.). Skip images of pure text, bullet points, or administrative/non-course elements.
@@ -696,7 +697,7 @@ _BAD_LABEL = re.compile(
     re.IGNORECASE,
 )
 
-def _dedup_slides(slides: list[SlideInfo], threshold: float = 0.7) -> list[SlideInfo]:
+def _dedup_slides(slides: list[SlideInfo], threshold: float = 0.85) -> list[SlideInfo]:
     """Remove near-duplicate slides by comparing text content.
 
     Groups consecutive slides whose text Jaccard similarity exceeds

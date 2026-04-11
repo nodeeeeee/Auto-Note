@@ -60,10 +60,11 @@ MIN_SCENE_GAP = 2.0
 MAX_FRAMES = 500
 
 # Perceptual-hash threshold for considering two frames as the same slide page.
-# dHash is 16×16 = 256 bits; incremental reveals (bullet-by-bullet, animation
-# steps) typically differ by 10–35 bits, while genuine slide transitions differ
-# by 60+ bits.  45 comfortably separates the two distributions.
-PAGE_SIMILARITY_THRESHOLD = 45
+# dHash is 16×16 = 256 bits; only frames that are VERY similar (minor cursor
+# movements, small text additions) should be grouped.  Lower values = more
+# unique frames preserved.  20 bits ≈ 8% difference — only near-identical
+# frames are merged.
+PAGE_SIMILARITY_THRESHOLD = 20
 
 
 def _get_pixels(img):
