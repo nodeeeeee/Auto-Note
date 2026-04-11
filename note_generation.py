@@ -1469,22 +1469,52 @@ def generate_with_iteration(
 # ── Auto-discovery ────────────────────────────────────────────────────────────
 
 def _find_alignment(slide_path: Path, course_dir: Path) -> Path | None:
+    """Find the alignment JSON that was created FOR this slide file.
+
+    Checks the 'slide_file' field inside each alignment JSON for an exact
+    or high-similarity match to slide_path.name.  Falls back to filename
+    Jaccard similarity if no slide_file field matches.
+    """
     align_dir = course_dir / "alignment"
     if not align_dir.exists():
         return None
-    stem = slide_path.stem.lower()
+
+    slide_name = slide_path.name.lower()
+    slide_stem = slide_path.stem.lower()
+
+    # Pass 1: exact match on slide_file field inside alignment JSON
+    for f in align_dir.glob("*.json"):
+        if f.name.endswith(".compact.json") or f.name.endswith("mapping.json"):
+            continue
+        try:
+            with open(f, encoding="utf-8") as fh:
+                data = json.load(fh)
+            sf = data.get("slide_file", "")
+            if sf and sf.lower() == slide_name:
+                return f
+        except Exception:
+            continue
+
+    # Pass 2: Jaccard similarity on slide_file field
     best_sc, best = 0.0, None
     for f in align_dir.glob("*.json"):
-        if f.name.endswith(".compact.json"):
+        if f.name.endswith(".compact.json") or f.name.endswith("mapping.json"):
             continue
-        ta = set(stem.replace("-", " ").split())
-        tb = set(f.stem.lower().replace("-", " ").split())
-        if not ta or not tb:
+        try:
+            with open(f, encoding="utf-8") as fh:
+                data = json.load(fh)
+            sf = data.get("slide_file", "")
+            if not sf:
+                continue
+            ta = set(slide_stem.replace("-", " ").split())
+            tb = set(Path(sf).stem.lower().replace("-", " ").split())
+            if ta and tb:
+                sc = len(ta & tb) / len(ta | tb)
+                if sc > best_sc:
+                    best_sc, best = sc, f
+        except Exception:
             continue
-        sc = len(ta & tb) / len(ta | tb)
-        if sc > best_sc:
-            best_sc, best = sc, f
-    return best if best_sc > 0.05 else None
+    return best if best_sc > 0.3 else None
 
 
 def _discover_screenshare_lectures(course_dir: Path) -> list[LectureData]:
@@ -1614,6 +1644,53 @@ def _discover_lectures(course_dir: Path) -> list[LectureData]:
         for file_idx, sp in enumerate(files, start=1):
             align = _find_alignment(sp, course_dir)
             lectures.append(LectureData(lec_num, sp, align, file_idx=file_idx))
+
+    # Deduplicate within each lecture number: when multiple slide files for
+    # the same lecture share the same alignment file, keep only the best one
+    # (prefer main slides over pre-lecture/review/annotated copies).
+    # This prevents duplicate content from e.g. "Lecture 6.pdf" and
+    # "Lecture 6 Pre Lecture.pdf" both aligning to the same transcript.
+    _SECONDARY_PAT = re.compile(
+        r"pre[_\s-]?lec|review|with\s*notes|ann\d|annotated",
+        re.IGNORECASE)
+    deduped: list[LectureData] = []
+    from itertools import groupby as _gby
+    for lec_num, grp in _gby(sorted(lectures, key=lambda x: x.num),
+                              key=lambda x: x.num):
+        group = list(grp)
+        if len(group) <= 1:
+            deduped.extend(group)
+            continue
+        # Within this lecture number, find files sharing the same alignment
+        seen: dict[str, LectureData] = {}
+        for ld in group:
+            if not ld.alignment_path:
+                deduped.append(ld)
+                continue
+            key = str(ld.alignment_path)
+            if key not in seen:
+                seen[key] = ld
+            else:
+                existing = seen[key]
+                # Prefer the file that is NOT a secondary variant
+                if _SECONDARY_PAT.search(existing.slide_path.stem) and \
+                   not _SECONDARY_PAT.search(ld.slide_path.stem):
+                    seen[key] = ld  # replace with main file
+                # else: keep existing
+        deduped.extend(seen.values())
+
+    if len(deduped) < len(lectures):
+        tqdm.write(f"  Deduplicated: {len(lectures)} → {len(deduped)} lecture(s) "
+                   f"(removed slide variants sharing the same alignment)")
+    lectures = deduped
+
+    # Renumber file_idx within each lecture number after dedup
+    final: list[LectureData] = []
+    for _, grp in _gby(sorted(lectures, key=lambda x: x.num), key=lambda x: x.num):
+        for fi, ld in enumerate(grp, 1):
+            ld.file_idx = fi
+            final.append(ld)
+    lectures = final
 
     # Combine with screen share lectures (if any)
     if ss_lectures:
