@@ -72,7 +72,7 @@ NOTE_LANGUAGE     = "en"    # "en" = English | "zh" = Chinese
 SHOW_SCORE        = False   # dev mode: set via --score flag to show self-scoring
 
 CHAPTER_SIZE      = 15      # slides per GPT call
-MAX_TRANSCRIPT_CHARS = 800  # per slide in prompt — transcript is the primary source
+MAX_TRANSCRIPT_CHARS = 350  # per slide in prompt (saves tokens)
 
 SCORE_WEIGHTS = {"coverage": 0.30, "terminology": 0.35,
                  "callouts": 0.15, "code_blocks": 0.20}
