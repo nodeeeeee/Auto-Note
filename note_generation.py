@@ -997,9 +997,9 @@ def generate_lecture(
     all_indices = [s.index for s in slides]
     ld.render_chunk_images(all_indices)
 
-    # Parallel section generation: run up to PARALLEL_SECTIONS sections
-    # concurrently.  Each section's generate + verify + translate is independent.
-    PARALLEL_SECTIONS = 3
+    # Parallel section generation.  API calls are pure network I/O so we can
+    # use more threads; claude-cli spawns local processes so we limit to 3.
+    PARALLEL_SECTIONS = 3 if NOTE_MODEL == "claude-cli" else 6
     if len(chunks) <= 1 or PARALLEL_SECTIONS <= 1:
         # Sequential fallback for single-section lectures
         parts: list[str] = []
