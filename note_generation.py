@@ -1034,9 +1034,8 @@ def generate_lecture(
             futures = {pool.submit(_gen, (ci, chunk)): ci
                        for ci, chunk in enumerate(chunks, start=1)}
             for fut in as_completed(futures):
-                ci = futures[fut]
-                content, fresh = fut.result()
-                results[ci] = (content, fresh)
+                ci_ret, (content, fresh) = fut.result()
+                results[ci_ret] = (content, fresh)
                 if bar:
                     with _bar_lock:
                         bar.update(1)
