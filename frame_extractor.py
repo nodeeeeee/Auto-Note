@@ -663,6 +663,13 @@ def process_course(course_id: str, base_dir: Path) -> int:
                                    skip_classify=skip_classify)
         if result[0] is not None:
             processed += 1
+            # Record classification in manifest so the app knows
+            entry["video_type"] = "screen"
+        else:
+            entry["video_type"] = "camera"
+        # Save manifest after each classification
+        with open(manifest_file, "w", encoding="utf-8") as _mf:
+            json.dump(manifest, _mf, indent=2)
 
     if processed == 0:
         print("[info] No screen-recording videos found for this course.")

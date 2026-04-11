@@ -1692,14 +1692,39 @@ def _discover_lectures(course_dir: Path) -> list[LectureData]:
             final.append(ld)
     lectures = final
 
-    # Combine with screen share lectures (if any)
+    # Combine with screen share lectures: screenshare replaces slide-based
+    # entries that cover the same lecture content.
     if ss_lectures:
-        # Renumber screenshare lectures to avoid collisions with slide lectures
-        max_num = max((ld.num for ld in lectures), default=0)
-        for ld in ss_lectures:
-            ld.num = max_num + ld.num
-        all_lectures = lectures + ss_lectures
-        return all_lectures
+        # Try to match each screenshare to a slide-based lecture by
+        # extracting a lecture number from the video/frame directory name.
+        _lec_num_pat = re.compile(
+            r"(?<![a-zA-Z])[Ll](?:ec(?:ture)?)?[-_ ]?0*(\d+)", re.IGNORECASE)
+        replaced_nums: set[int] = set()
+        for ss in ss_lectures:
+            m = _lec_num_pat.search(ss.slide_path.name)
+            if m:
+                target_num = int(m.group(1))
+                # Find and replace the slide-based entry with this number
+                for i, ld in enumerate(lectures):
+                    if ld.num == target_num and ld.source == "slides":
+                        ss.num = target_num
+                        lectures[i] = ss
+                        replaced_nums.add(target_num)
+                        break
+                else:
+                    # No matching slide lecture — append with a new number
+                    max_num = max((ld.num for ld in lectures), default=0)
+                    ss.num = max_num + 1
+                    lectures.append(ss)
+            else:
+                max_num = max((ld.num for ld in lectures), default=0)
+                ss.num = max_num + 1
+                lectures.append(ss)
+
+        if replaced_nums:
+            tqdm.write(f"  Screenshare replaces slide-based for lecture(s) "
+                       f"{sorted(replaced_nums)}")
+        return lectures
 
     return lectures
 
