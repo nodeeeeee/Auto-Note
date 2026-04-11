@@ -720,7 +720,10 @@ def _get_stream_url(
     """
     def _extract_stream(body: dict) -> tuple[str, str] | None:
         streams = (body.get("Delivery") or {}).get("Streams") or []
-        for tag in ("SS", "DV", "OBJECT", None):
+        # Prefer screen content (SS > OBJECT) over camera (DV).
+        # OBJECT streams contain the lecturer's screen recording (slides),
+        # which is more valuable for note generation than the camera view.
+        for tag in ("SS", "OBJECT", "DV", None):
             for s in streams:
                 surl = s.get("StreamUrl", "")
                 if surl and (tag is None or s.get("Tag") == tag):

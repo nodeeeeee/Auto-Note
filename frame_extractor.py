@@ -679,11 +679,9 @@ def extract_and_align(
         print("  [error] No frames extracted")
         return None, None
 
-    # Step 2b: Filter out camera frames (for mixed screen/camera videos)
-    frame_map, timestamps = filter_camera_frames(frame_map, timestamps)
-    if not frame_map:
-        print("  All frames are camera shots — not a screen recording.")
-        return None, None
+    # Note: per-frame camera filtering is disabled. The video-level classifier
+    # already decided this is a screen recording. Slides can have any background
+    # color (dark, light, colored), so brightness-based filtering is unreliable.
 
     # Step 3: Build alignment (if caption exists)
     alignment_path = None
@@ -764,8 +762,9 @@ def process_course(course_id: str, base_dir: Path) -> int:
             print(f"  [skip] No caption for: {video_stem} (transcribe first)")
             continue
 
-        # For SS-tagged streams, skip classification (known screen share)
-        skip_classify = (entry.get("stream_tag", "").upper() == "SS")
+        # For SS/OBJECT-tagged streams, skip classification (known screen content)
+        tag = entry.get("stream_tag", "").upper()
+        skip_classify = (tag in ("SS", "OBJECT"))
         result = extract_and_align(video_path, caption_path, course_dir,
                                    skip_classify=skip_classify)
         if result[0] is not None:
