@@ -1784,7 +1784,45 @@ def _discover_lectures(course_dir: Path) -> list[LectureData]:
         if replaced_nums:
             tqdm.write(f"  Screenshare replaces slide-based for lecture(s) "
                        f"{sorted(replaced_nums)}")
-        return lectures
+
+    # ── Final pass: add any aligned captions not yet covered ─────────────
+    # Some videos have alignments but don't match any slide file or
+    # screenshare frame directory.  Add them so every video gets a note.
+    covered_aligns = {str(ld.alignment_path) for ld in lectures if ld.alignment_path}
+    align_dir = course_dir / "alignment"
+    if align_dir.exists():
+        max_num = max((ld.num for ld in lectures), default=0)
+        added = 0
+        for af in sorted(align_dir.glob("*.json")):
+            if af.name.endswith(".compact.json") or af.name.endswith("mapping.json"):
+                continue
+            if str(af) in covered_aligns:
+                continue
+            try:
+                with open(af, encoding="utf-8") as fh:
+                    data = json.load(fh)
+                if data.get("source") == "screenshare":
+                    # Screenshare without frame dir — skip (needs frame_extractor)
+                    frame_dir = course_dir / "frames" / af.stem
+                    if not frame_dir.exists():
+                        continue
+                    max_num += 1
+                    lectures.append(LectureData(
+                        max_num, frame_dir, af, source="screenshare", frame_dir=frame_dir))
+                else:
+                    slide_file = data.get("slide_file", "")
+                    slide_path = course_dir / "materials" / slide_file if slide_file else af
+                    if not slide_path.exists():
+                        # Try finding in subdirs
+                        candidates = list((course_dir / "materials").rglob(slide_file)) if slide_file else []
+                        slide_path = candidates[0] if candidates else af
+                    max_num += 1
+                    lectures.append(LectureData(max_num, slide_path, af))
+                added += 1
+            except Exception:
+                continue
+        if added:
+            tqdm.write(f"  Added {added} video(s) without matching slides")
 
     return lectures
 
