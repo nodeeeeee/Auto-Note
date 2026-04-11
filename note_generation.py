@@ -990,26 +990,57 @@ def generate_lecture(
 
     chunks = [slides[i:i+CHAPTER_SIZE]
               for i in range(0, len(slides), CHAPTER_SIZE)]
-    parts: list[str] = []
-    for ci, chunk in enumerate(chunks, start=1):
-        content, fresh = generate_section(
-            lec_num=lec_num,
-            lec_title=lec_title,
-            course_name=course_name,
-            chunk=chunk,
-            ci=ci,
-            ld=ld,
-            out_dir=out_dir,
-            sections_dir=sections_dir,
-            detail=detail,
-            has_transcript=has_transcript,
-            bar=bar,
-            force=force,
-        )
-        parts.append(content)
-        any_fresh = any_fresh or fresh
-        if bar:
-            bar.update(1)
+
+    # Parallel section generation: run up to PARALLEL_SECTIONS sections
+    # concurrently.  Each section's generate + verify + translate is independent.
+    PARALLEL_SECTIONS = 3
+    if len(chunks) <= 1 or PARALLEL_SECTIONS <= 1:
+        # Sequential fallback for single-section lectures
+        parts: list[str] = []
+        for ci, chunk in enumerate(chunks, start=1):
+            content, fresh = generate_section(
+                lec_num=lec_num, lec_title=lec_title, course_name=course_name,
+                chunk=chunk, ci=ci, ld=ld, out_dir=out_dir,
+                sections_dir=sections_dir, detail=detail,
+                has_transcript=has_transcript, bar=bar, force=force,
+            )
+            parts.append(content)
+            any_fresh = any_fresh or fresh
+            if bar:
+                bar.update(1)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+        _bar_lock = threading.Lock()
+
+        def _gen(ci_chunk):
+            ci, chunk = ci_chunk
+            return ci, generate_section(
+                lec_num=lec_num, lec_title=lec_title, course_name=course_name,
+                chunk=chunk, ci=ci, ld=ld, out_dir=out_dir,
+                sections_dir=sections_dir, detail=detail,
+                has_transcript=has_transcript, bar=None, force=force,
+            )
+
+        results: dict[int, tuple[str, bool]] = {}
+        with ThreadPoolExecutor(max_workers=PARALLEL_SECTIONS) as pool:
+            futures = {pool.submit(_gen, (ci, chunk)): ci
+                       for ci, chunk in enumerate(chunks, start=1)}
+            for fut in as_completed(futures):
+                ci = futures[fut]
+                content, fresh = fut.result()
+                results[ci] = (content, fresh)
+                if bar:
+                    with _bar_lock:
+                        bar.update(1)
+
+        # Reassemble in order
+        parts = []
+        for ci in sorted(results.keys()):
+            content, fresh = results[ci]
+            parts.append(content)
+            any_fresh = any_fresh or fresh
+
     return "\n\n".join(parts), any_fresh
 
 
