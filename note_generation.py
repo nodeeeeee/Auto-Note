@@ -809,20 +809,24 @@ def _build_chunk_prompt(
         if s.index not in img_map:
             continue
         rel = img_map[s.index].relative_to(out_dir)
+
+        # Build context: what the lecturer was saying when this slide was shown
+        cs = compact_by_idx.get(s.index)
+        transcript_ctx = ""
+        if cs and cs.get("transcript", "").strip():
+            transcript_ctx = cs["transcript"][:150].replace("\n", " ")
+
         if source == "screenshare":
-            # For screen share frames: include ALL frames with their text
-            # content so the LLM can write accurate captions.
             brief = s.text[:120].replace("\n", " ") if s.text.strip() else ""
-            img_hints_lines.append(f"  Frame {s.index+1}: `{rel}` — {brief}")
+            ctx = f" [context: {transcript_ctx}]" if transcript_ctx else ""
+            img_hints_lines.append(f"  Frame {s.index+1}: `{rel}` — {brief}{ctx}")
         else:
             cache_key = f"page_{s.index}"
             desc = img_cache.get(cache_key, "")
-            # Include the full cached description (from GPT-4o-mini vision)
-            # so the LLM can write accurate captions matching the actual
-            # image content, not just the slide text.
             if desc or s.word_count < 80 or s.has_code:
                 note = desc if desc else ("has code" if s.has_code else s.label)
-                img_hints_lines.append(f"  Slide {s.index+1}: `{rel}` — {note}")
+                ctx = f" [context: {transcript_ctx}]" if transcript_ctx else ""
+                img_hints_lines.append(f"  Slide {s.index+1}: `{rel}` — {note}{ctx}")
     image_hints = "\n".join(img_hints_lines) or "  (no images for this segment)"
 
     if has_transcript:
