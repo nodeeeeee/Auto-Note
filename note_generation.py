@@ -196,10 +196,8 @@ _LANG_NAMES = {"en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean
 
 
 def _P(key: str) -> str:
-    """Return the English prompt, with a translation instruction appended when
-    NOTE_LANGUAGE is not English.  All intermediate processing (system prompt,
-    chunk prompt, verification) stays in English for best quality; only the
-    final note output is translated word-by-word."""
+    """Return the English prompt unchanged. Translation is always a separate
+    post-generation step via _translate()."""
     return _PROMPTS["en"][key]
 
 
@@ -997,9 +995,10 @@ def generate_lecture(
     all_indices = [s.index for s in slides]
     ld.render_chunk_images(all_indices)
 
-    # Parallel section generation.  API calls are pure network I/O so we can
-    # use more threads; claude-cli spawns local processes so we limit to 3.
-    PARALLEL_SECTIONS = 3 if NOTE_MODEL == "claude-cli" else 6
+    # Parallel section generation.  Each section's generate + translate is
+    # independent.  claude-cli spawns subprocesses (I/O bound, not CPU bound),
+    # so we can run many concurrently just like API calls.
+    PARALLEL_SECTIONS = 6
     if len(chunks) <= 1 or PARALLEL_SECTIONS <= 1:
         # Sequential fallback for single-section lectures
         parts: list[str] = []
