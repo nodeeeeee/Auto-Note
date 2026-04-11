@@ -991,6 +991,11 @@ def generate_lecture(
     chunks = [slides[i:i+CHAPTER_SIZE]
               for i in range(0, len(slides), CHAPTER_SIZE)]
 
+    # Pre-render all slide images before parallel generation so threads
+    # don't race on the shared ld.img_map dict and filesystem writes.
+    all_indices = [s.index for s in slides]
+    ld.render_chunk_images(all_indices)
+
     # Parallel section generation: run up to PARALLEL_SECTIONS sections
     # concurrently.  Each section's generate + verify + translate is independent.
     PARALLEL_SECTIONS = 3
