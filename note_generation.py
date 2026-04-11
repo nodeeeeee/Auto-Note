@@ -696,6 +696,50 @@ _BAD_LABEL = re.compile(
     re.IGNORECASE,
 )
 
+def _dedup_slides(slides: list[SlideInfo], threshold: float = 0.7) -> list[SlideInfo]:
+    """Remove near-duplicate slides by comparing text content.
+
+    Groups consecutive slides whose text Jaccard similarity exceeds
+    *threshold* and keeps only the one with the most text (typically
+    the "fully revealed" version of an incremental slide).  Also deduplicates
+    non-consecutive slides that are very similar (threshold 0.9).
+    """
+    if len(slides) <= 1:
+        return slides
+
+    def _words(s: SlideInfo) -> set[str]:
+        return set(s.text.lower().split())
+
+    # Pass 1: merge consecutive near-duplicates
+    kept: list[SlideInfo] = [slides[0]]
+    for s in slides[1:]:
+        wa, wb = _words(kept[-1]), _words(s)
+        union = wa | wb
+        if union and len(wa & wb) / len(union) >= threshold:
+            # Keep the one with more content
+            if s.word_count > kept[-1].word_count:
+                kept[-1] = s
+        else:
+            kept.append(s)
+
+    # Pass 2: remove non-consecutive near-duplicates (very high threshold)
+    final: list[SlideInfo] = []
+    seen_texts: list[set[str]] = []
+    for s in kept:
+        ws = _words(s)
+        is_dup = False
+        for prev_ws in seen_texts:
+            union = ws | prev_ws
+            if union and len(ws & prev_ws) / len(union) >= 0.9:
+                is_dup = True
+                break
+        if not is_dup:
+            final.append(s)
+            seen_texts.append(ws)
+
+    return final
+
+
 def _chunk_title(slides_in_chunk: list[SlideInfo]) -> str:
     """Pick a representative title for a chunk of slides.
 
@@ -766,18 +810,18 @@ def _build_chunk_prompt(
             continue
         rel = img_map[s.index].relative_to(out_dir)
         if source == "screenshare":
-            # For screen share frames: include ALL frames since we can't
-            # easily tell which have diagrams without vision API.  The LLM
-            # is instructed to only reference frames with visual content.
-            img_hints_lines.append(f"  Frame {s.index+1}: `{rel}`")
+            # For screen share frames: include ALL frames with their text
+            # content so the LLM can write accurate captions.
+            brief = s.text[:120].replace("\n", " ") if s.text.strip() else ""
+            img_hints_lines.append(f"  Frame {s.index+1}: `{rel}` — {brief}")
         else:
             cache_key = f"page_{s.index}"
             desc = img_cache.get(cache_key, "")
-            # Include most slides in the available images list — the LLM
-            # decides which to insert.  Only skip slides that are clearly
-            # heavy-text with no visual/code content and no cached description.
+            # Include the full cached description (from GPT-4o-mini vision)
+            # so the LLM can write accurate captions matching the actual
+            # image content, not just the slide text.
             if desc or s.word_count < 80 or s.has_code:
-                note = desc[:80] if desc else ("has code" if s.has_code else "")
+                note = desc if desc else ("has code" if s.has_code else s.label)
                 img_hints_lines.append(f"  Slide {s.index+1}: `{rel}` — {note}")
     image_hints = "\n".join(img_hints_lines) or "  (no images for this segment)"
 
@@ -931,8 +975,17 @@ def generate_lecture(
     one section was freshly generated (not loaded from cache)."""
     has_transcript = bool(ld.compact_by_idx)
     any_fresh = False
-    chunks = [ld.slides[i:i+CHAPTER_SIZE]
-              for i in range(0, len(ld.slides), CHAPTER_SIZE)]
+
+    # Deduplicate near-identical slides (e.g. incremental reveals, repeated
+    # content across pre-lecture/main slides).  Keep the slide with the most
+    # text content from each group of similar slides.
+    slides = _dedup_slides(ld.slides)
+    if len(slides) < len(ld.slides):
+        tqdm.write(f"  Deduplicated: {len(ld.slides)} → {len(slides)} slides "
+                   f"(removed near-duplicates)")
+
+    chunks = [slides[i:i+CHAPTER_SIZE]
+              for i in range(0, len(slides), CHAPTER_SIZE)]
     parts: list[str] = []
     for ci, chunk in enumerate(chunks, start=1):
         content, fresh = generate_section(
