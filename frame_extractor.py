@@ -397,6 +397,106 @@ def get_video_duration(video_path: Path) -> float:
         return 0.0
 
 
+# ── Per-frame screen/camera classification ────────────────────────────────────
+
+def _is_screen_frame(img) -> bool:
+    """Classify a single frame as screen recording (True) or camera (False).
+
+    Uses the same heuristics as classify_video but on a single image.
+    Screen recordings have: sharp edges, uniform backgrounds, high brightness.
+    Camera shots have: natural colors, gradients, low uniformity.
+    """
+    import statistics
+    w, h = img.size
+    pixels = _get_pixels(img)
+
+    # Edge density
+    row_diffs = 0
+    for y in range(0, h - 1, 4):
+        for x in range(0, w - 1, 4):
+            idx = y * w + x
+            idx_r = idx + 1
+            if idx_r < len(pixels):
+                diff = sum(abs(a - b) for a, b in zip(pixels[idx], pixels[idx_r]))
+                if diff > 100:
+                    row_diffs += 1
+    total_samples = (h // 4) * (w // 4)
+    edge_ratio = row_diffs / max(total_samples, 1)
+
+    # Color uniformity (32px blocks)
+    block_size = 32
+    uniform_blocks = 0
+    total_blocks = 0
+    for by in range(0, h - block_size, block_size):
+        for bx in range(0, w - block_size, block_size):
+            block = img.crop((bx, by, bx + block_size, by + block_size))
+            bp = _get_pixels(block)
+            r_vals = [p[0] for p in bp]
+            g_vals = [p[1] for p in bp]
+            b_vals = [p[2] for p in bp]
+            total_blocks += 1
+            if (statistics.stdev(r_vals) < 15 and
+                statistics.stdev(g_vals) < 15 and
+                statistics.stdev(b_vals) < 15):
+                uniform_blocks += 1
+    uniformity = uniform_blocks / max(total_blocks, 1)
+
+    # Brightness
+    brightness = [sum(p) / 3 for p in pixels[::16]]
+    bright_ratio = sum(1 for b in brightness if b > 200) / len(brightness)
+
+    # Screen recordings: high brightness (>70%) + high uniformity (>55%)
+    # because slides have clean solid backgrounds filling the entire frame.
+    # Camera shots: even with a white projection screen, overall brightness
+    # is lower (<50%) due to dark surroundings (curtains, floor, equipment).
+    return (bright_ratio > 0.70 and uniformity > 0.55)
+
+
+def filter_camera_frames(frame_map: dict[int, Path],
+                         timestamps: list[float]) -> tuple[dict[int, Path], list[float]]:
+    """Remove camera frames from extracted frames, keeping only screen recordings.
+
+    Returns filtered (frame_map, timestamps).
+    """
+    try:
+        from PIL import Image as PILImage
+    except ImportError:
+        return frame_map, timestamps
+
+    kept_map: dict[int, Path] = {}
+    kept_ts: list[float] = []
+    removed = 0
+
+    for idx in sorted(frame_map.keys()):
+        png = frame_map[idx]
+        try:
+            img = PILImage.open(png).convert("RGB")
+            if _is_screen_frame(img):
+                kept_map[idx] = png
+                kept_ts.append(timestamps[idx])
+            else:
+                removed += 1
+                png.unlink(missing_ok=True)  # delete camera frame
+        except Exception:
+            kept_map[idx] = png  # keep on error
+            kept_ts.append(timestamps[idx])
+
+    if removed:
+        print(f"  Filtered out {removed} camera frame(s), kept {len(kept_map)} screen frame(s)")
+
+        # Renumber frames sequentially
+        new_map: dict[int, Path] = {}
+        for new_idx, old_idx in enumerate(sorted(kept_map.keys())):
+            old_path = kept_map[old_idx]
+            new_path = old_path.parent / f"frame_{new_idx + 1:03d}.png"
+            if old_path != new_path:
+                old_path.rename(new_path)
+            new_map[new_idx] = new_path
+        return new_map, kept_ts
+
+    return frame_map, timestamps
+
+
 # ── Frame extraction ─────────────────────────────────────────────────────────
 
 def extract_frames(video_path: Path, timestamps: list[float],
@@ -577,6 +677,12 @@ def extract_and_align(
     frame_map = extract_frames(video_path, timestamps, frame_dir)
     if not frame_map:
         print("  [error] No frames extracted")
+        return None, None
+
+    # Step 2b: Filter out camera frames (for mixed screen/camera videos)
+    frame_map, timestamps = filter_camera_frames(frame_map, timestamps)
+    if not frame_map:
+        print("  All frames are camera shots — not a screen recording.")
         return None, None
 
     # Step 3: Build alignment (if caption exists)
