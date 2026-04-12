@@ -21,7 +21,11 @@ from pathlib import Path
 
 
 def _clean_transcript(text: str) -> str:
-    """Remove filler words and normalise whitespace."""
+    """Remove filler words, Whisper hallucination dots, and normalise whitespace."""
+    # Strip Whisper hallucination: segments that are just dots/periods
+    # (common when Whisper processes silent audio or ambient noise)
+    if re.fullmatch(r"[\s.]+", text):
+        return ""
     # Strip common ASR fillers that add no information
     fillers = re.compile(
         r"\b(uh+|um+|er+|ah+|okay so|so yeah|you know|right so|alright)\b",
