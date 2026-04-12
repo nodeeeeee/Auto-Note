@@ -1184,6 +1184,13 @@ class LectureData:
             if cache_f.exists():
                 with open(cache_f) as f:
                     self.img_cache = json.load(f)
+        else:
+            # For screenshare: load the frame description cache created by
+            # frame_extractor._describe_frames()
+            cache_f = self.frame_dir / "image_cache.json"
+            if cache_f.exists():
+                with open(cache_f) as f:
+                    self.img_cache = json.load(f)
         # img_map is populated lazily per chunk to avoid rendering all slides at once
         self._out_dir = out_dir
 

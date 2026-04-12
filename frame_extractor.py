@@ -497,6 +497,45 @@ def filter_camera_frames(frame_map: dict[int, Path],
     return frame_map, timestamps
 
 
+def _describe_frames(frame_dir: Path, frame_map: dict[int, Path]) -> None:
+    """Use GPT-4o-mini vision to describe each frame's content.
+    Saves descriptions to a .image_cache.json file next to the frame dir.
+    """
+    cache_file = frame_dir / "image_cache.json"
+    cache = {}
+    if cache_file.exists():
+        try:
+            cache = json.loads(cache_file.read_text())
+        except Exception:
+            pass
+
+    # Use the ImageDescriber from semantic_alignment
+    try:
+        from semantic_alignment import ImageDescriber
+        from PIL import Image as PILImage
+    except ImportError:
+        return
+
+    describer = ImageDescriber()
+    described = 0
+    for idx in sorted(frame_map.keys()):
+        key = f"page_{idx}"
+        if key in cache:
+            continue
+        try:
+            img = PILImage.open(frame_map[idx]).convert("RGB")
+            desc = describer.describe_slide_image(img)
+            if desc:
+                cache[key] = desc
+                described += 1
+        except Exception:
+            continue
+
+    if described:
+        cache_file.write_text(json.dumps(cache, indent=2))
+        print(f"  Described {described} frame(s) via vision API")
+
+
 # ── Frame extraction ─────────────────────────────────────────────────────────
 
 def extract_frames(video_path: Path, timestamps: list[float],
@@ -682,6 +721,10 @@ def extract_and_align(
     # Note: per-frame camera filtering is disabled. The video-level classifier
     # already decided this is a screen recording. Slides can have any background
     # color (dark, light, colored), so brightness-based filtering is unreliable.
+
+    # Step 2c: Describe each frame using GPT-4o-mini vision so the note LLM
+    # knows what each frame actually shows (diagrams, text, charts, etc.)
+    _describe_frames(frame_dir, frame_map)
 
     # Step 3: Build alignment (if caption exists)
     alignment_path = None
