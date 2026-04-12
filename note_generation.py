@@ -72,7 +72,7 @@ NOTE_LANGUAGE     = "en"    # "en" = English | "zh" = Chinese
 SHOW_SCORE        = False   # dev mode: set via --score flag to show self-scoring
 
 CHAPTER_SIZE      = 15      # slides per GPT call
-MAX_TRANSCRIPT_CHARS = 350  # per slide in prompt (saves tokens)
+MAX_NOTE_CHARS = 120000  # max total chars in the chunk prompt (transcript + slides + images)
 
 SCORE_WEIGHTS = {"coverage": 0.30, "terminology": 0.35,
                  "callouts": 0.15, "code_blocks": 0.20}
@@ -829,24 +829,28 @@ def _build_chunk_prompt(
     image_hints = "\n".join(img_hints_lines) or "  (no images for this segment)"
 
     if has_transcript:
-        # Transcript block: [MM:SS Slide N「Title」] transcript...
+        # Transcript block: [MM:SS Slide N「Title」] transcript (full text)
         transcript_lines = []
         for s in slides:
             cs = compact_by_idx.get(s.index)
             if cs and cs.get("transcript", "").strip():
                 mm = int(cs["start"] // 60)
                 ss = int(cs["start"] % 60)
-                tx = cs["transcript"][:MAX_TRANSCRIPT_CHARS]
+                tx = cs["transcript"]
                 transcript_lines.append(
                     f"[{mm:02d}:{ss:02d} Slide {s.index+1}「{s.label}」]\n{tx}")
         transcript_block = "\n\n".join(transcript_lines) or _P("no_transcript")
 
-        return _P("chunk").format(
+        prompt = _P("chunk").format(
             course_name=course_name, lec_num=lec_num, lec_title=lec_title,
             slide_outline=slide_outline, transcript_block=transcript_block,
             image_hints=image_hints, chunk_idx=chunk_idx, chunk_title=chunk_title,
             detail=detail, detail_instruction=_detail_instr(detail),
         )
+        # Truncate if total prompt exceeds limit
+        if len(prompt) > MAX_NOTE_CHARS:
+            prompt = prompt[:MAX_NOTE_CHARS] + "\n\n[...transcript truncated due to length...]"
+        return prompt
     else:
         return _P("slide_only").format(
             course_name=course_name, lec_num=lec_num, lec_title=lec_title,
