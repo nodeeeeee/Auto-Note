@@ -102,7 +102,8 @@ Writing guidelines:
 8. Image insertion rules (strictly follow):
    - **Insert all and only images that contain visual elements**: diagrams, flowcharts, architecture drawings, code screenshots, mathematical derivations, data visualizations, tables with meaningful structure, annotated figures, or any non-trivial visual illustration. Do NOT insert administrative or non-course elements (course info slides, polling QR codes, attendance prompts, etc.) even if they contain images.
    - Pure text slides (bullet points, definitions, titles) do not need images — the notes express text better than a screenshot.
-   - **Each image MUST be placed inline, immediately after the paragraph that directly discusses the concept shown in that image.** Only insert an image when the paragraph above it is actually explaining the same concept the image depicts. If an image does not match any specific paragraph, skip it or move it to a more appropriate location. NEVER group multiple images together.
+   - **Be INCLUSIVE with images**: if a frame/slide shows a diagram, chart, table, code, or any non-trivial visual content, include it. Aim to include most of the content-rich images available, not just a few highlights. It's better to have more images with brief connecting text than to skip images.
+   - **Each image MUST be placed inline, immediately after the paragraph that directly discusses the concept shown in that image.** If a frame shows content that the transcript doesn't fully cover, briefly describe the frame's content (using the description provided in the image hints) and then insert the image.
    - Format for slide images: `![Slide N](images/LXX/slide_NNN.png) *(one-sentence description)*`
    - Format for screen-capture frames: `![Frame N](images/LXX/frame_NNN.png) *(one-sentence description)*`
      (LXX is provided by the caller — do not modify it; the caption must be in parentheses wrapped in asterisks exactly as shown).
@@ -128,7 +129,7 @@ Requirements:
 - Detail level: {detail}/10. {detail_instruction}
 - Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, mathematical derivations, etc.). Skip images of pure text, bullet points, or administrative/non-course elements.
   Copy the exact path from the "Available images" list above (including the images/L** subdirectory). Do not invent paths.
-  **CRITICAL: only insert an image directly after a paragraph that discusses the SAME concept the image depicts. The caption must describe what the image shows and connect to the paragraph above. If an image doesn't match any paragraph, skip it. NEVER cluster multiple images together.**
+  **CRITICAL: Be inclusive — aim to include MOST content-rich images (diagrams, charts, code, tables). For each image, ensure a paragraph discusses its content, then insert the image right after that paragraph. If a frame has visual content that the transcript doesn't cover, write a brief paragraph about it based on the image description, then insert the image. NEVER cluster multiple images together consecutively without explanatory text between them.**
   Format: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
 - Code examples must be complete and compilable (with necessary includes/imports), using the correct language tag (```c, ```cpp, ```python).
 - Only cover the content in this segment; do not introduce material from other lectures.
@@ -150,7 +151,7 @@ Requirements:
 - Detail level: {detail}/10. {detail_instruction}
 - Images: **insert all images that contain visual elements** (diagrams, charts, graphs, code screenshots, architecture drawings, data visualizations, mathematical derivations, etc.). Skip images of pure text, bullet points, or administrative/non-course elements.
   Copy the exact path from the "Available images" list above (including the images/L** subdirectory). Do not invent paths.
-  **CRITICAL: only insert an image directly after a paragraph that discusses the SAME concept the image depicts. If an image doesn't match any paragraph, skip it. NEVER cluster multiple images together.**
+  **CRITICAL: Be inclusive — aim to include MOST content-rich images. For each image, write a paragraph about its content then insert the image. NEVER cluster multiple images together consecutively without explanatory text between them.**
   Format: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
 - Code examples must be complete and compilable, using the correct language tag (```c, ```cpp, ```python).
 """,
@@ -829,16 +830,25 @@ def _build_chunk_prompt(
     image_hints = "\n".join(img_hints_lines) or "  (no images for this segment)"
 
     if has_transcript:
-        # Transcript block: [MM:SS Slide N「Title」] transcript (full text)
+        # Transcript block: [MM:SS Slide N「Title」] transcript (full text).
+        # For slides without transcript, fall back to the cached image
+        # description so the LLM still has content to write notes about them.
         transcript_lines = []
         for s in slides:
             cs = compact_by_idx.get(s.index)
-            if cs and cs.get("transcript", "").strip():
+            tx = cs.get("transcript", "").strip() if cs else ""
+            if tx:
                 mm = int(cs["start"] // 60)
                 ss = int(cs["start"] % 60)
-                tx = cs["transcript"]
                 transcript_lines.append(
                     f"[{mm:02d}:{ss:02d} Slide {s.index+1}「{s.label}」]\n{tx}")
+            else:
+                # No transcript — use image description if available
+                desc = img_cache.get(f"page_{s.index}", "").strip() if source == "screenshare" else ""
+                if desc and len(desc) > 30:
+                    transcript_lines.append(
+                        f"[Slide {s.index+1}「{s.label}」 — no audio, visual only]\n"
+                        f"(Visual content: {desc[:300]})")
         transcript_block = "\n\n".join(transcript_lines) or _P("no_transcript")
 
         prompt = _P("chunk").format(
