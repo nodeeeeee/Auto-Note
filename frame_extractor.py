@@ -60,11 +60,25 @@ MIN_SCENE_GAP = 2.0
 MAX_FRAMES = 500
 
 # Perceptual-hash threshold for considering two frames as the same slide page.
-# dHash is 16×16 = 256 bits; only frames that are VERY similar (minor cursor
-# movements, small text additions) should be grouped.  Lower values = more
-# unique frames preserved.  20 bits ≈ 8% difference — only near-identical
-# frames are merged.
-PAGE_SIMILARITY_THRESHOLD = 20
+# dHash is 16×16 = 256 bits. Higher = merge more aggressively.
+# 35 bits ≈ 14% difference — merges incremental bullet reveals on the same
+# slide while still keeping genuinely different pages.
+PAGE_SIMILARITY_THRESHOLD = 35
+
+# Vision-description patterns that indicate a junk frame (desktop, loading,
+# unreadable). Frames matching these are deleted after description.
+_JUNK_DESC_RE = re.compile(
+    r"\b(windows 11|windows 10|desktop (background|interface)|taskbar|"
+    r"file explorer|loading screen|blank screen|black screen|entirely black|"
+    r"unable to (view|describe|access|process)|"
+    r"cannot (describe|view|generate|provide|access)|"
+    r"i'?m sorry|\bsorry\b|"
+    r"abstract blue wave|swirling blue|"
+    r"(humorous|funny|joke) (meme|image|comic|cartoon|scene|depiction|strip|illustration|individuals|panel)|"
+    r"(meme|comic) (format|image|strip|panel)|"
+    r"xkcd|four-panel comic|meme structure)\b",
+    re.IGNORECASE,
+)
 
 
 def _get_pixels(img):
@@ -243,22 +257,34 @@ def _information_score(img) -> int:
 # ── Intelligent scene detection ──────────────────────────────────────────────
 
 def detect_scenes(video_path: Path, threshold: float = SCENE_THRESHOLD,
-                  min_gap: float = MIN_SCENE_GAP) -> list[float]:
+                  min_gap: float = MIN_SCENE_GAP,
+                  stream_tag: str = "") -> list[float]:
     """Detect unique slide/screen changes in a video.
 
     Strategy (three-pass):
       1. Use ffmpeg scene filter to find raw scene-change timestamps
-      2. If too few detected (common with camera/lecture videos), fall back
-         to periodic sampling every 10 seconds
+      2. Add periodic samples (always for OBJECT/SS streams; fallback for others)
       3. Extract a candidate frame at each timestamp, compute perceptual
          hashes (dHash) and information scores.  Group consecutive frames
          that belong to the same slide page (incremental reveals, animations)
          and keep only the most informative frame from each group.
 
-    This prevents both missing slides and keeping duplicate frames from
-    the same slide page (e.g. bullet-by-bullet reveals).
+    For OBJECT/SS streams (stable slide recordings with subtle text-only
+    changes), a lower scene threshold and periodic sampling are required
+    because the scene filter alone misses gradual transitions.
     """
     duration = get_video_duration(video_path)
+    tag = (stream_tag or "").upper()
+    is_screen_stream = tag in ("SS", "OBJECT")
+
+    # Screen streams: more sensitive detection + denser periodic fallback.
+    if is_screen_stream:
+        threshold = min(threshold, 0.15)
+        sample_interval = 30.0
+        always_periodic = True
+    else:
+        sample_interval = 10.0
+        always_periodic = False
 
     # ── Pass 1: ffmpeg scene detection ───────────────────────────────────────
     cmd = [
@@ -283,16 +309,17 @@ def detect_scenes(video_path: Path, threshold: float = SCENE_THRESHOLD,
                 if ts - raw_timestamps[-1] >= min_gap:
                     raw_timestamps.append(ts)
 
-    print(f"  Scene filter: {len(raw_timestamps)} raw candidates (threshold={threshold})")
+    print(f"  Scene filter: {len(raw_timestamps)} raw candidates "
+          f"(threshold={threshold}, stream={tag or 'auto'})")
 
-    # ── Pass 2: if too few, add periodic samples ─────────────────────────────
-    SAMPLE_INTERVAL = 10.0  # seconds
-    if len(raw_timestamps) < 5 and duration > 60:
-        print(f"  Too few scene changes — adding periodic samples every {SAMPLE_INTERVAL}s")
+    # ── Pass 2: periodic samples (always for screen streams, fallback otherwise) ──
+    need_periodic = always_periodic or (len(raw_timestamps) < 5 and duration > 60)
+    if need_periodic and duration > 60:
+        reason = "screen stream — always sampling" if always_periodic else "too few scene changes"
+        print(f"  {reason} — adding periodic samples every {sample_interval}s")
         periodic = [t for t in
-                    (i * SAMPLE_INTERVAL for i in range(int(duration / SAMPLE_INTERVAL) + 1))
+                    (i * sample_interval for i in range(int(duration / sample_interval) + 1))
                     if t < duration]
-        # Merge with scene-detected timestamps, remove near-duplicates
         combined = sorted(set(raw_timestamps + periodic))
         merged: list[float] = [combined[0]]
         for ts in combined[1:]:
@@ -497,7 +524,27 @@ def filter_camera_frames(frame_map: dict[int, Path],
     return frame_map, timestamps
 
 
-def _describe_frames(frame_dir: Path, frame_map: dict[int, Path]) -> None:
+def _is_blank_frame(img) -> bool:
+    """Detect mostly-black or mostly-white frames (filler/transition frames).
+
+    Samples pixels on a coarse grid; a frame is "blank" if >95% of samples are
+    either very dark (<15) or very bright (>240).
+    """
+    try:
+        from PIL import Image as PILImage
+    except ImportError:
+        return False
+    small = img.convert("L").resize((64, 36), PILImage.LANCZOS)
+    pixels = _get_pixels(small)
+    total = len(pixels)
+    if total == 0:
+        return False
+    dark = sum(1 for p in pixels if p < 15)
+    bright = sum(1 for p in pixels if p > 240)
+    return (dark / total > 0.95) or (bright / total > 0.95)
+
+
+def _describe_frames(frame_dir: Path, frame_map: dict[int, Path]) -> list[int]:
     """Use GPT-4o-mini vision to describe each frame's content.
     Saves descriptions to a .image_cache.json file next to the frame dir.
     """
@@ -518,22 +565,79 @@ def _describe_frames(frame_dir: Path, frame_map: dict[int, Path]) -> None:
 
     describer = ImageDescriber()
     described = 0
+    junked: list[int] = []
     for idx in sorted(frame_map.keys()):
         key = f"page_{idx}"
         if key in cache:
+            if _JUNK_DESC_RE.search(cache[key]):
+                junked.append(idx)
             continue
         try:
             img = PILImage.open(frame_map[idx]).convert("RGB")
+            # Cheap pre-check: near-black or near-white frames carry no info
+            # and often trigger vision-API refusals.  Skip them outright.
+            if _is_blank_frame(img):
+                junked.append(idx)
+                continue
             desc = describer.describe_slide_image(img)
-            if desc:
-                cache[key] = desc
-                described += 1
+            if not desc:
+                continue
+            if _JUNK_DESC_RE.search(desc):
+                junked.append(idx)
+                continue
+            cache[key] = desc
+            described += 1
         except Exception:
             continue
 
     if described:
         cache_file.write_text(json.dumps(cache, indent=2))
         print(f"  Described {described} frame(s) via vision API")
+    return junked
+
+
+def _drop_junk_and_renumber(
+    frame_map: dict[int, Path],
+    timestamps: list[float],
+    junk_indices: list[int],
+    frame_dir: Path,
+) -> tuple[dict[int, Path], list[float]]:
+    """Delete junk frames, update cache, renumber remaining frames contiguously."""
+    if not junk_indices:
+        return frame_map, timestamps
+
+    junk_set = set(junk_indices)
+    for idx in junk_indices:
+        p = frame_map.get(idx)
+        if p:
+            p.unlink(missing_ok=True)
+
+    # Rebuild map + timestamps preserving only non-junk, then renumber.
+    kept_pairs = [(i, frame_map[i]) for i in sorted(frame_map) if i not in junk_set]
+    kept_ts = [timestamps[i] for i in sorted(frame_map) if i not in junk_set and i < len(timestamps)]
+
+    cache_file = frame_dir / "image_cache.json"
+    cache = {}
+    if cache_file.exists():
+        try:
+            cache = json.loads(cache_file.read_text())
+        except Exception:
+            pass
+
+    new_map: dict[int, Path] = {}
+    new_cache: dict = {}
+    for new_idx, (old_idx, old_path) in enumerate(kept_pairs):
+        new_path = old_path.parent / f"frame_{new_idx + 1:03d}.png"
+        if old_path != new_path and old_path.exists():
+            old_path.rename(new_path)
+        new_map[new_idx] = new_path
+        old_key = f"page_{old_idx}"
+        if old_key in cache:
+            new_cache[f"page_{new_idx}"] = cache[old_key]
+
+    cache_file.write_text(json.dumps(new_cache, indent=2))
+    print(f"  Filtered {len(junk_indices)} junk frame(s); {len(new_map)} remain")
+    return new_map, kept_ts
 
 
 # ── Frame extraction ─────────────────────────────────────────────────────────
@@ -680,6 +784,7 @@ def extract_and_align(
     caption_path: Path | None,
     course_dir: Path,
     skip_classify: bool = False,
+    stream_tag: str = "",
 ) -> tuple[Path | None, Path | None]:
     """Full pipeline: classify video → detect scenes → extract frames → build alignment.
 
@@ -709,7 +814,7 @@ def extract_and_align(
 
     # Step 1: Detect unique scenes (scene filter + periodic fallback + dedup)
     print("  Detecting scene changes...")
-    timestamps = detect_scenes(video_path)
+    timestamps = detect_scenes(video_path, stream_tag=stream_tag)
 
     # Step 2: Extract frames
     print(f"  Extracting {len(timestamps)} frames...")
@@ -724,7 +829,14 @@ def extract_and_align(
 
     # Step 2c: Describe each frame using GPT-4o-mini vision so the note LLM
     # knows what each frame actually shows (diagrams, text, charts, etc.)
-    _describe_frames(frame_dir, frame_map)
+    junk = _describe_frames(frame_dir, frame_map)
+
+    # Step 2d: Drop junk frames (desktop wallpapers, loading screens, vision
+    # refusals) and renumber the remaining frames + timestamps contiguously.
+    if junk:
+        frame_map, timestamps = _drop_junk_and_renumber(
+            frame_map, timestamps, junk, frame_dir
+        )
 
     # Step 3: Build alignment (if caption exists)
     alignment_path = None
@@ -809,7 +921,8 @@ def process_course(course_id: str, base_dir: Path) -> int:
         tag = entry.get("stream_tag", "").upper()
         skip_classify = (tag in ("SS", "OBJECT"))
         result = extract_and_align(video_path, caption_path, course_dir,
-                                   skip_classify=skip_classify)
+                                   skip_classify=skip_classify,
+                                   stream_tag=tag)
         if result[0] is not None:
             processed += 1
             # Record classification in manifest so the app knows

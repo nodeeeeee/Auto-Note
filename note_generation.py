@@ -490,28 +490,48 @@ def _translate(text: str, lang: str) -> str:
     Only prose text is translated; technical terms keep English with
     translation in parentheses on first use."""
     system = (
-        f"You are a professional translator. Translate English study notes "
-        f"into {lang}. You MUST translate every English sentence into {lang}. "
-        f"Do NOT leave any prose in English. The output must read naturally "
-        f"as {lang} text, not as English with annotations."
+        f"You are a professional translator for technical study notes. "
+        f"Translate English prose into {lang} while keeping ALL technical "
+        f"terminology in its original English form. Do NOT translate "
+        f"technical terms — readers are studying the subject in English "
+        f"and need to recognize the exact English terminology from lectures, "
+        f"exams, and textbooks."
     )
     prompt = (
-        f"Translate the following study notes entirely into {lang}.\n\n"
+        f"Translate the following study notes into {lang}.\n\n"
         f"Rules:\n"
-        f"1. Every English sentence must become a {lang} sentence. Do NOT "
-        f"leave English prose — the reader should be able to read the entire "
-        f"note in {lang} without knowing English.\n"
-        f"2. Technical terms: write the {lang} term first, then the English "
-        f"in parentheses on first use. Example for Chinese: 子网掩码 (subnet mask).\n"
-        f"3. Keep EXACTLY as-is without any modification:\n"
+        f"1. Translate ONLY the connecting prose (explanatory sentences, "
+        f"narrative text) into {lang}.\n"
+        f"2. Keep ALL technical terminology in ENGLISH, verbatim. This "
+        f"includes — but is not limited to — protocol names (TCP, UDP, HTTP, "
+        f"DHCP, ARP, ICMP, DNS, RSA, AES…), networking concepts (subnet mask, "
+        f"MAC address, broadcast, unicast, frame, packet, segment, hub, "
+        f"switch, router, bridge, LAN, WAN, VPN…), cryptography terms "
+        f"(symmetric key, public key, private key, cipher, plaintext, "
+        f"ciphertext, block cipher, stream cipher, hash, signature, session "
+        f"key, Diffie-Hellman…), algorithm names (CSMA/CD, Caesar cipher, "
+        f"monoalphabetic cipher, polyalphabetic cipher), proper nouns "
+        f"(Alice, Bob, Trudy, Ethernet, Wi-Fi, OSI, NUS…), and anything in "
+        f"code font `…`. Never translate these into {lang}.\n"
+        f"3. Do NOT write the {lang} translation next to the English term — "
+        f"just keep the English term as-is. The reader already understands "
+        f"English technical vocabulary; they need {lang} only for the "
+        f"connecting narrative.\n"
+        f"4. Keep EXACTLY as-is without any modification:\n"
         f"   - Image lines: ![Slide N](path) *(caption)* — translate ONLY "
-        f"the caption text inside *(...)*, keep the path unchanged\n"
+        f"the non-technical prose inside *(...)*, keep the path + all "
+        f"English technical terms unchanged\n"
         f"   - LaTeX: $...$ and $$...$$\n"
         f"   - Code blocks: ```...```\n"
         f"   - Callout markers: > [!IMPORTANT]\n"
         f"   - Markdown formatting: ###, **, *, ---, etc.\n"
-        f"4. Do NOT shorten, summarize, or omit any content.\n"
-        f"5. Output ONLY the translated text.\n\n"
+        f"5. Do NOT shorten, summarize, or omit any content.\n"
+        f"6. Output ONLY the translated text.\n\n"
+        f"Example (for Chinese):\n"
+        f"  IN:  The symmetric key cryptography scheme uses the same key "
+        f"for encryption and decryption.\n"
+        f"  OUT: symmetric key cryptography 方案在 encryption 和 decryption "
+        f"时使用同一个 key。\n\n"
         f"---\n\n{text}"
     )
     return _call(NOTE_MODEL, system, prompt, len(text) * 3)
@@ -817,7 +837,9 @@ def _build_chunk_prompt(
             transcript_ctx = cs["transcript"][:150].replace("\n", " ")
 
         if source == "screenshare":
-            brief = s.text[:120].replace("\n", " ") if s.text.strip() else ""
+            cache_key = f"page_{s.index}"
+            desc = img_cache.get(cache_key, "").strip()
+            brief = desc[:220] if desc else (s.text[:120].replace("\n", " ") if s.text.strip() else "")
             ctx = f" [context: {transcript_ctx}]" if transcript_ctx else ""
             img_hints_lines.append(f"  Frame {s.index+1}: `{rel}` — {brief}{ctx}")
         else:
@@ -1227,12 +1249,17 @@ class LectureData:
             else:
                 img_dir = self._out_dir / "images" / f"L{self.num:02d}_F{self.file_idx:02d}"
             img_dir.mkdir(parents=True, exist_ok=True)
+            import shutil
             for i in slide_indices:
                 if i in self.img_map:
                     src = self.img_map[i]
                     dst = img_dir / f"frame_{i + 1:03d}.png"
-                    if not dst.exists():
-                        import shutil
+                    # Always refresh: frames may have been re-extracted with
+                    # different content under the same number after a dedup
+                    # or junk-filter pass.
+                    if (not dst.exists() or
+                            src.stat().st_mtime > dst.stat().st_mtime or
+                            src.stat().st_size != dst.stat().st_size):
                         shutil.copy2(str(src), str(dst))
                     self.img_map[i] = dst
             return {i: self.img_map[i] for i in slide_indices if i in self.img_map}
