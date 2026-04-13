@@ -1,6 +1,6 @@
 {
   "name": "auto-note",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "AutoNote — lecture notes generator from Canvas recordings",
   "homepage": "https://github.com/nodeeeeee/Auto-Note",
   "author": {
@@ -44,8 +44,9 @@
       }
     },
     "win": {
-      "target": ["nsis", "appx"],
-      "icon": "../assets/icon.ico"
+      "target": ["nsis"],
+      "icon": "../assets/icon.ico",
+      "signAndEditExecutable": false
     },
     "nsis": {
       "createDesktopShortcut": true,
@@ -53,20 +54,21 @@
       "shortcutName": "AutoNote",
       "include": "build/uninstaller.nsh"
     },
-    "appx": {
-      "displayName": "AutoNote",
-      "identityName": "AutoNote",
-      "publisher": "CN=nodeeeeee",
-      "publisherDisplayName": "nodeeeeee",
-      "applicationId": "AutoNote",
-      "languages": ["en-US", "zh-CN"]
-    },
     "mac": {
-      "target": {
-        "target": "dmg",
-        "arch": ["x64", "arm64"]
-      },
-      "icon": "../assets/icon.icns"
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "icon": "../assets/icon.icns",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "writeUpdateInfo": false,
+      "sign": false
     },
     "extraResources": [
       {

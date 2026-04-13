@@ -1,74 +1,36 @@
-; AutoNote NSIS uninstaller customization
-; Shows a dialog asking the user what to retain when uninstalling.
+; AutoNote NSIS uninstaller customization.
+;
+; During uninstall, ask the user whether to keep each of three data areas.
+; Implemented entirely inside customUnInstall — confirmed working in CI —
+; without pages, vars, or LogicLib.
 
-!include "MUI2.nsh"
+!pragma warning disable 6010
+!pragma warning disable 6020
+!pragma warning disable 8000
 
-Var KeepNotes
-Var KeepSettings
-Var KeepVenv
-
-; ── Custom uninstall page ──────────────────────────────────────────────────────
-Function un.customUninstallPage
-  nsDialogs::Create 1018
-  Pop $0
-
-  ${NSD_CreateLabel} 0 0 100% 24u "Choose what to keep after uninstalling AutoNote:"
-  Pop $0
-
-  ${NSD_CreateCheckBox} 16u 32u 100% 14u "Keep generated notes and downloaded files (~AutoNote folder)"
-  Pop $KeepNotes
-  ${NSD_Check} $KeepNotes
-
-  ${NSD_CreateCheckBox} 16u 52u 100% 14u "Keep settings and API keys (~/.auto_note/config)"
-  Pop $KeepSettings
-  ${NSD_Check} $KeepSettings
-
-  ${NSD_CreateCheckBox} 16u 72u 100% 14u "Keep ML environment (~/.auto_note/venv, ~2 GB)"
-  Pop $KeepVenv
-
-  ${NSD_CreateLabel} 16u 100u 100% 24u "Unchecked items will be permanently deleted."
-  Pop $0
-
-  nsDialogs::Show
-FunctionEnd
-
-Function un.customUninstallPageLeave
-  ${NSD_GetState} $KeepNotes $KeepNotes
-  ${NSD_GetState} $KeepSettings $KeepSettings
-  ${NSD_GetState} $KeepVenv $KeepVenv
-FunctionEnd
-
-; ── Register the custom page ──────────────────────────────────────────────────
-!macro customUnInstallPage
-  UninstPage custom un.customUninstallPage un.customUninstallPageLeave
-!macroend
-
-; ── Cleanup after standard uninstall ──────────────────────────────────────────
 !macro customUnInstall
-  ; Delete ML venv if user chose not to keep it
-  ${If} $KeepVenv != ${BST_CHECKED}
-    RMDir /r "$PROFILE\.auto_note\venv"
-  ${EndIf}
+  ; ── Generated notes + downloaded course files ─────────────────────────────
+  MessageBox MB_YESNO|MB_ICONQUESTION "Keep generated notes and downloaded course files in %USERPROFILE%\AutoNote?$\n$\nYes = keep them, No = delete" /SD IDNO IDYES autonote_keep_notes
+  RMDir /r "$PROFILE\AutoNote"
+autonote_keep_notes:
 
-  ; Delete settings if user chose not to keep them
-  ${If} $KeepSettings != ${BST_CHECKED}
-    ; Remove config, credentials, scripts — but keep venv if retained above
-    Delete "$PROFILE\.auto_note\config.json"
-    Delete "$PROFILE\.auto_note\canvas_token.txt"
-    Delete "$PROFILE\.auto_note\openai_api.txt"
-    Delete "$PROFILE\.auto_note\anthropic_key.txt"
-    Delete "$PROFILE\.auto_note\gemini_api.txt"
-    Delete "$PROFILE\.auto_note\deepseek_api.txt"
-    Delete "$PROFILE\.auto_note\grok_api.txt"
-    Delete "$PROFILE\.auto_note\mistral_api.txt"
-    Delete "$PROFILE\.auto_note\manifest.json"
-    RMDir /r "$PROFILE\.auto_note\scripts"
-    ; Only remove the dir if it's empty (venv might still be there)
-    RMDir "$PROFILE\.auto_note"
-  ${EndIf}
+  ; ── ML environment (~2 GB) ────────────────────────────────────────────────
+  MessageBox MB_YESNO|MB_ICONQUESTION "Keep ML environment (~2 GB) in %USERPROFILE%\.auto_note\venv?$\n$\nYes = keep it, No = delete" /SD IDNO IDYES autonote_keep_venv
+  RMDir /r "$PROFILE\.auto_note\venv"
+autonote_keep_venv:
 
-  ; Delete generated content if user chose not to keep it
-  ${If} $KeepNotes != ${BST_CHECKED}
-    RMDir /r "$PROFILE\AutoNote"
-  ${EndIf}
+  ; ── Settings, API keys, cached scripts ────────────────────────────────────
+  MessageBox MB_YESNO|MB_ICONQUESTION "Keep settings and API keys in %USERPROFILE%\.auto_note?$\n$\nYes = keep them, No = delete" /SD IDNO IDYES autonote_keep_settings
+  Delete "$PROFILE\.auto_note\config.json"
+  Delete "$PROFILE\.auto_note\canvas_token.txt"
+  Delete "$PROFILE\.auto_note\openai_api.txt"
+  Delete "$PROFILE\.auto_note\anthropic_key.txt"
+  Delete "$PROFILE\.auto_note\gemini_api.txt"
+  Delete "$PROFILE\.auto_note\deepseek_api.txt"
+  Delete "$PROFILE\.auto_note\grok_api.txt"
+  Delete "$PROFILE\.auto_note\mistral_api.txt"
+  Delete "$PROFILE\.auto_note\manifest.json"
+  RMDir /r "$PROFILE\.auto_note\scripts"
+  RMDir "$PROFILE\.auto_note"
+autonote_keep_settings:
 !macroend
