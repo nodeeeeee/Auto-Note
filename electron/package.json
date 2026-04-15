@@ -1,6 +1,6 @@
 {
   "name": "auto-note",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "AutoNote — lecture notes generator from Canvas recordings",
   "homepage": "https://github.com/nodeeeeee/Auto-Note",
   "author": {
@@ -94,6 +94,10 @@
       {
         "from": "../note_generation.py",
         "to": "scripts/note_generation.py"
+      },
+      {
+        "from": "../pipeline_worker.py",
+        "to": "scripts/pipeline_worker.py"
       }
     ]
   }
