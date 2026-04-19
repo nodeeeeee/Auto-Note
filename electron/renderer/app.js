@@ -1460,6 +1460,18 @@ async function attachPageHandlers() {
     document.getElementById('pp-run-btn')?.addEventListener('click', async () => {
       const cid     = document.getElementById('pp-course')?.value;
       if (!cid) { snack('Select a course first.', false); return; }
+
+      // Verify the ML environment is ready before launching Python.
+      // Without this, missing imports (e.g. canvasapi — issue #4) surface
+      // as a cryptic mid-pipeline failure.
+      try {
+        const env = await window.api.checkEnv();
+        if (env && env.needsSetup) {
+          snack('ML environment not installed. Open Settings → Install ML Environment.', false);
+          return;
+        }
+      } catch {/* checkEnv unavailable in older builds — proceed */}
+
       const python  = await window.api.getPythonPath();
       const outDir  = State.outputDir || await window.api.getOutputDir();
       const stealth = document.getElementById('pp-stealth')?.checked;
@@ -1749,7 +1761,10 @@ async function attachPageHandlers() {
 
   // ── Settings ──────────────────────────────────────────────────────────────────
   if (pg === 6) {
-    loadSettingsData();
+    // loadSettingsData injects the Browse button + other inputs into
+    // #conn-fields asynchronously. Await it before binding handlers, otherwise
+    // the elements don't exist yet and the bindings silently no-op.
+    await loadSettingsData();
     fillEnvComponents();
 
     document.getElementById('cfg-browse-btn')?.addEventListener('click', async () => {

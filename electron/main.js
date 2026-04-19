@@ -984,15 +984,19 @@ function registerIpc() {
     path: VENV_PYTHON,
   }));
 
-  // Environment readiness check for first-start wizard
+  // Environment readiness check for first-start wizard.
+  // Imports cover everything downloader.py and the other pipeline scripts
+  // need at start-up. Missing any of these triggers the setup wizard so the
+  // user installs the ML environment instead of hitting "No module named X"
+  // mid-pipeline (e.g. issue #4: canvasapi missing).
   ipcMain.handle('env:check', () => {
     const hasPython = fs.existsSync(VENV_PYTHON);
-    // Check if core packages are importable
     let coreOk = false;
     if (hasPython) {
       try {
-        const r = spawnSync(VENV_PYTHON, ['-c', 'import tqdm, requests, openai; print("ok")'],
-                            { timeout: 10000, windowsHide: true });
+        const r = spawnSync(VENV_PYTHON,
+          ['-c', 'import tqdm, requests, openai, canvasapi, PIL, fitz, pptx; print("ok")'],
+          { timeout: 10000, windowsHide: true });
         coreOk = (r.status === 0 && (r.stdout || '').toString().includes('ok'));
       } catch {}
     }
