@@ -28,7 +28,10 @@ SCRIPTS_DIR   = _AUTO_NOTE / "scripts"
 VENV_PYTHON   = str(_AUTO_NOTE / "venv" / "bin" / "python")
 # In dev mode, fall back to the current interpreter so unit tests still work.
 PYTHON        = VENV_PYTHON if Path(VENV_PYTHON).exists() else sys.executable
-INSTALLED     = SCRIPTS_DIR.exists()
+# INSTALLED: only true when scripts are actually in ~/.auto_note/scripts/.
+# An empty scripts/ directory (left over from an uninstall) must fall back
+# to PROJECT_DIR so tests don't invoke non-existent files.
+INSTALLED     = SCRIPTS_DIR.exists() and (SCRIPTS_DIR / "downloader.py").exists()
 CONFIG_FILE   = _AUTO_NOTE / "config.json"
 TOKEN_FILE    = _AUTO_NOTE / "canvas_token.txt"
 MANIFEST_FILE = _AUTO_NOTE / "manifest.json"

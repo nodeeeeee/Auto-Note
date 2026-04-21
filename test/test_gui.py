@@ -182,12 +182,14 @@ class TestCourseNameFromNotes:
 
 # ── _read_constant ────────────────────────────────────────────────────────────
 
+# Evaluated only when flet is importable; without the guard, pytest would
+# NameError at collection time because `gui` is unbound.
 _DEV_SCRIPTS = {
     "downloader": gui.PROJECT_DIR / "downloader.py",
     "transcribe":  gui.PROJECT_DIR / "extract_caption.py",
     "align":       gui.PROJECT_DIR / "semantic_alignment.py",
     "generate":    gui.PROJECT_DIR / "note_generation.py",
-}
+} if FLET_AVAILABLE else {}
 
 
 class TestReadConstant:

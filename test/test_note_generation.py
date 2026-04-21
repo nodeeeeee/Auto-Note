@@ -461,9 +461,11 @@ def _all_system_prompts() -> str:
 
 class TestSystemPrompt:
     def test_no_professor_centric_narration_rule(self):
+        # System prompts are now authored in English (Chinese output is
+        # produced by a separate post-generation _translate() pass).
         prompts = _all_system_prompts()
-        assert "第三人称" in prompts
-        assert "老师" in prompts
+        assert "third-person" in prompts.lower() or "third person" in prompts.lower()
+        assert "professor" in prompts.lower() or "lecturer" in prompts.lower()
 
     def test_latex_math_rule(self):
         prompts = _all_system_prompts()
