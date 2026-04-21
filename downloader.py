@@ -278,15 +278,47 @@ def _resolve_panopto_tool_id(course_id: int) -> int | None:
 
     Canvas assigns different external-tool IDs per-institution and sometimes
     per-course, so the old hardcoded ID (128) only worked for the author's
-    default token. For a new token or a new course (e.g. issue reported for
-    EE4802 with a secondary Canvas token), the tab ID differs and Strategy 2
-    silently returned zero videos.
+    default token. For a different token or course (e.g. EE4802), a different
+    tool ID or tool set may apply — and Strategy 2 silently returned zero.
 
-    We query `/api/v1/courses/{course_id}/external_tools` and match any tool
-    whose name/domain mentions Panopto or Videos. Results are cached.
+    Resolution order:
+      1. /api/v1/courses/<id>/tabs — works even when the LTI tool is account-
+         scoped (not "installed" at the course level). The tab id is of the
+         form "context_external_tool_<N>", so we parse N directly. This is
+         what the UI itself uses to render the left-hand navigation.
+      2. /api/v1/courses/<id>/external_tools — works for tools explicitly
+         installed in the course. Matches on name/domain/url.
+    Results are cached.
     """
     if course_id in _PANOPTO_TOOL_ID_CACHE:
         return _PANOPTO_TOOL_ID_CACHE[course_id]
+
+    _VIDEO_LABELS = ("videos/panopto", "videos", "video", "lecture videos", "panopto")
+
+    # ── Strategy A: course tabs (most reliable for account-scoped tools) ─────
+    try:
+        r = requests.get(
+            f"{CANVAS_URL}/api/v1/courses/{course_id}/tabs",
+            headers=_canvas_headers(),
+            timeout=30,
+        )
+        if r.status_code == 200:
+            for tab in r.json():
+                tid_str = (tab.get("id") or "")
+                label   = (tab.get("label") or "").lower()
+                if not tid_str.startswith("context_external_tool_"):
+                    continue
+                if "panopto" in label or label in _VIDEO_LABELS:
+                    try:
+                        tid = int(tid_str.rsplit("_", 1)[-1])
+                        _PANOPTO_TOOL_ID_CACHE[course_id] = tid
+                        return tid
+                    except ValueError:
+                        continue
+    except Exception as e:
+        tqdm.write(f"  [warn] _resolve_panopto_tool_id tabs({course_id}): {e}")
+
+    # ── Strategy B: external_tools (explicit course-level installs) ──────────
     try:
         r = requests.get(
             f"{CANVAS_URL}/api/v1/courses/{course_id}/external_tools",
@@ -294,19 +326,19 @@ def _resolve_panopto_tool_id(course_id: int) -> int | None:
             params={"per_page": 100},
             timeout=30,
         )
-        if r.status_code != 200:
-            return None
-        for tool in r.json():
-            name   = (tool.get("name")   or "").lower()
-            domain = (tool.get("domain") or "").lower()
-            url    = (tool.get("url")    or "").lower()
-            if ("panopto" in name or "panopto" in domain or "panopto" in url
-                    or name in ("videos", "video", "lecture videos")):
-                tid = int(tool["id"])
-                _PANOPTO_TOOL_ID_CACHE[course_id] = tid
-                return tid
+        if r.status_code == 200:
+            for tool in r.json():
+                name   = (tool.get("name")   or "").lower()
+                domain = (tool.get("domain") or "").lower()
+                url    = (tool.get("url")    or "").lower()
+                if ("panopto" in name or "panopto" in domain or "panopto" in url
+                        or name in _VIDEO_LABELS):
+                    tid = int(tool["id"])
+                    _PANOPTO_TOOL_ID_CACHE[course_id] = tid
+                    return tid
     except Exception as e:
-        tqdm.write(f"  [warn] _resolve_panopto_tool_id({course_id}): {e}")
+        tqdm.write(f"  [warn] _resolve_panopto_tool_id tools({course_id}): {e}")
+
     return None
 
 
