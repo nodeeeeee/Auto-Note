@@ -83,6 +83,11 @@ BATCH_SIZE    = 64                    # embedding batch size
 JINA_EMBED_MODEL = "jinaai/jina-embeddings-v4"
 JINA_API_URL     = "https://api.jina.ai/v1/embeddings"
 
+# Google Generative Language embeddings — text-only remote API.  Used for
+# caption↔slide file matching when GEMINI_API_KEY (or gemini_api.txt) is set.
+GOOGLE_EMBED_MODEL = "text-embedding-004"
+GOOGLE_API_URL     = "https://generativelanguage.googleapis.com/v1beta"
+
 # Viterbi transition log-probabilities
 STAY_LOGP     =  0.0    # free to stay on the same slide
 FWD_LOGP_PER  = -0.02   # cost per slide advanced forward (nearly free)
@@ -560,6 +565,81 @@ def embed_texts_jina(texts: list[str], desc: str = "  embedding texts") -> np.nd
 
     print(f"{desc} done.", flush=True)
     return np.array(all_embeddings, dtype=np.float32)
+
+
+# ── Google Generative Language embeddings ────────────────────────────────────
+
+def _get_google_key() -> str:
+    import os
+    key = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+    if not key:
+        for name in ("gemini_api.txt", "google_api.txt"):
+            key_file = DATA_DIR / name
+            if key_file.exists():
+                key = key_file.read_text().strip()
+                if key:
+                    break
+    return key
+
+
+def embed_texts_google(texts: list[str], desc: str = "  embedding texts",
+                       task_type: str = "RETRIEVAL_DOCUMENT") -> np.ndarray | None:
+    """Embed texts using Google's Generative Language API (text-embedding-004).
+
+    Returns L2-normalised float32 embeddings, shape (N, 768), or None on failure.
+    """
+    import requests as _req
+
+    key = _get_google_key()
+    if not key:
+        print("  [google] No Gemini API key — cannot embed texts")
+        return None
+
+    print(f"{desc} ({len(texts)} texts via Google API)...", flush=True)
+
+    url = (f"{GOOGLE_API_URL}/models/{GOOGLE_EMBED_MODEL}:batchEmbedContents"
+           f"?key={key}")
+    all_embeddings: list[list[float]] = []
+    batch_size = 100   # API limit
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        payload = {
+            "requests": [
+                {
+                    "model": f"models/{GOOGLE_EMBED_MODEL}",
+                    "content": {"parts": [{"text": t}]},
+                    "taskType": task_type,
+                }
+                for t in batch
+            ]
+        }
+        try:
+            resp = _req.post(
+                url,
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=120,
+            )
+            if resp.status_code != 200:
+                print(f"  [google] API error {resp.status_code}: {resp.text[:200]}")
+                return None
+            data = resp.json()
+            for item in data.get("embeddings", []):
+                all_embeddings.append(item.get("values", []))
+        except Exception as e:
+            print(f"  [google] Request failed: {e}")
+            return None
+
+    if not all_embeddings:
+        return None
+
+    arr = np.array(all_embeddings, dtype=np.float32)
+    # L2-normalise so cosine similarity == inner product
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    arr = arr / norms
+    print(f"{desc} done.", flush=True)
+    return arr
 
 
 # ── Transcript windowing ──────────────────────────────────────────────────────
@@ -1409,7 +1489,7 @@ def _content_match_slide_group(
 MATCH_MODELS = {
     "bge-m3":      "BAAI/bge-m3",
     "jina":        "jina-embeddings-v4",   # via Jina API
-    "google":      "google-embedding-v2",  # placeholder — not yet implemented
+    "google":      GOOGLE_EMBED_MODEL,     # via Google Generative Language API
     "mpnet":       "all-mpnet-base-v2",    # local fallback
 }
 
@@ -1425,7 +1505,7 @@ def suggest_matches(
 
     Args:
         course_dir: path containing captions/ and materials/
-        model: embedding model key — "bge-m3" (default), "jina", "mpnet"
+        model: embedding model key — "bge-m3" (default), "jina", "google", "mpnet"
 
     Returns:
         {caption_stem: "materials/relative/path.pdf", ...}
@@ -1493,6 +1573,14 @@ def suggest_matches(
         slide_embs = embed_texts_jina(slide_texts, desc="  [match] slides")
         if cap_embs is None or slide_embs is None:
             print("  [match] Jina API failed — falling back to heuristics")
+            return {}
+    elif model == "google":
+        cap_embs = embed_texts_google(cap_texts, desc="  [match] captions",
+                                      task_type="RETRIEVAL_QUERY")
+        slide_embs = embed_texts_google(slide_texts, desc="  [match] slides",
+                                        task_type="RETRIEVAL_DOCUMENT")
+        if cap_embs is None or slide_embs is None:
+            print("  [match] Google API failed — falling back to heuristics")
             return {}
     else:
         # Local model: bge-m3 or mpnet
@@ -1786,9 +1874,9 @@ def main() -> None:
                         help="Suggest video↔slide matches using embedding similarity "
                              "(outputs JSON to stdout). Does NOT run alignment.")
     parser.add_argument("--match-model", metavar="MODEL", default="bge-m3",
-                        choices=["bge-m3", "jina", "mpnet"],
+                        choices=["bge-m3", "jina", "google", "mpnet"],
                         help="Embedding model for --suggest-matches "
-                             "(default: bge-m3, alternatives: jina, mpnet)")
+                             "(default: bge-m3, alternatives: jina, google, mpnet)")
     parser.add_argument("--force", action="store_true",
                         help="Re-align all captions even if alignment files already exist")
     args = parser.parse_args()

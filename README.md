@@ -65,7 +65,8 @@ Fill in the **API Keys & Credentials** card:
 | **Canvas Token** | Downloading materials and listing videos. Get it from Canvas → Account → Settings → New Access Token. |
 | **OpenAI API Key** | Note generation with OpenAI models (gpt-5.1, gpt-4.1, o3, ...). |
 | **Anthropic API Key** | Note generation with Claude models via API. |
-| **Gemini API Key** | Note generation with Gemini models. |
+| **Gemini API Key** | Note generation with Gemini models; also enables the Google `text-embedding-004` option for video↔slide matching. |
+| **Jina API Key** | Optional: enables the `jina-embeddings-v4` remote option (text + multimodal) for video↔slide matching. |
 
 Alternatively, if you have **Claude Code** installed on your computer, you can select **Claude CLI (local)** as the note generation model — no API key needed.
 
@@ -110,6 +111,23 @@ For screen-share videos (slide recordings), the pipeline automatically:
 4. Builds timestamp-based transcript-to-frame alignment
 
 Camera recordings use traditional slide-based alignment with PDF/PPTX files.
+
+### Video↔slide matching models
+
+For pairing each transcript to its slide file, the pipeline uses an embedding model picked by `python semantic_alignment.py --suggest-matches --match-model <MODEL>`:
+
+| Model | Type | Requires | Get key / model |
+|-------|------|----------|-----------------|
+| `bge-m3` *(default)* | Local (`BAAI/bge-m3`, ~2.3 GB) | NVIDIA GPU **≥ 6 GB VRAM** recommended (CUDA 11.8+); runs on CPU at ~10× slower. Auto-downloaded from [huggingface.co/BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3) on first use | — |
+| `mpnet` | Local (`all-mpnet-base-v2`, ~420 MB) | Any GPU **≥ 2 GB VRAM** or CPU (acceptable speed). Auto-downloaded from [huggingface.co/sentence-transformers/all-mpnet-base-v2](https://huggingface.co/sentence-transformers/all-mpnet-base-v2) | — |
+| `jina` | Remote (`jina-embeddings-v4`) | `JINA_API_KEY` env var or `jina_api.txt` in data dir | [jina.ai/api-dashboard](https://jina.ai/api-dashboard/) (free tier available) |
+| `google` | Remote (`text-embedding-004`) | `GEMINI_API_KEY` / `GOOGLE_API_KEY` env var or `gemini_api.txt` in data dir | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (free tier available) |
+
+> **GPU guidance for local models.** Whisper large-v3 transcription dominates VRAM usage (~10 GB); embedding models fit alongside on a **12–16 GB** card (RTX 3060 12 GB, 4070, 4080, etc.). With only **6–8 GB** VRAM, prefer `mpnet` over `bge-m3`, or switch to a remote option so the GPU is free for Whisper. On CPU, remote (`jina` / `google`) is almost always faster than local embeddings.
+
+> **Other API keys mentioned above.** OpenAI: [platform.openai.com/api-keys](https://platform.openai.com/api-keys). Anthropic: [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys). Canvas: Canvas → Account → Settings → **New Access Token**.
+
+Remote options let the matcher run without any local ML environment — the `google` model reuses the same Gemini key used for note generation.
 
 ---
 
