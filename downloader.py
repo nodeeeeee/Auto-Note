@@ -262,8 +262,52 @@ def get_course_by_id(canvas: Canvas, course_id: int):
 #  VIDEO SECTION
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Canvas external-tool ID for the "Videos/Panopto" course navigation tab
-_PANOPTO_TAB_TOOL_ID = 128
+# Canvas external-tool ID for the "Videos/Panopto" course navigation tab.
+# Used as a fallback; the actual ID is discovered per-course via
+# _resolve_panopto_tool_id() because Canvas assigns different tool IDs
+# per-institution and sometimes per-course.
+_PANOPTO_TAB_TOOL_ID_FALLBACK = 128
+
+# Per-course cache for resolved Panopto tool IDs.
+_PANOPTO_TOOL_ID_CACHE: dict[int, int] = {}
+
+
+def _resolve_panopto_tool_id(course_id: int) -> int | None:
+    """Discover the Canvas external-tool ID of the Panopto/Videos tab for a
+    specific course.
+
+    Canvas assigns different external-tool IDs per-institution and sometimes
+    per-course, so the old hardcoded ID (128) only worked for the author's
+    default token. For a new token or a new course (e.g. issue reported for
+    EE4802 with a secondary Canvas token), the tab ID differs and Strategy 2
+    silently returned zero videos.
+
+    We query `/api/v1/courses/{course_id}/external_tools` and match any tool
+    whose name/domain mentions Panopto or Videos. Results are cached.
+    """
+    if course_id in _PANOPTO_TOOL_ID_CACHE:
+        return _PANOPTO_TOOL_ID_CACHE[course_id]
+    try:
+        r = requests.get(
+            f"{CANVAS_URL}/api/v1/courses/{course_id}/external_tools",
+            headers=_canvas_headers(),
+            params={"per_page": 100},
+            timeout=30,
+        )
+        if r.status_code != 200:
+            return None
+        for tool in r.json():
+            name   = (tool.get("name")   or "").lower()
+            domain = (tool.get("domain") or "").lower()
+            url    = (tool.get("url")    or "").lower()
+            if ("panopto" in name or "panopto" in domain or "panopto" in url
+                    or name in ("videos", "video", "lecture videos")):
+                tid = int(tool["id"])
+                _PANOPTO_TOOL_ID_CACHE[course_id] = tid
+                return tid
+    except Exception as e:
+        tqdm.write(f"  [warn] _resolve_panopto_tool_id({course_id}): {e}")
+    return None
 
 
 def _find_panopto_items(canvas: Canvas, course) -> list[dict]:
@@ -369,13 +413,15 @@ def _get_panopto_tab_folder(course_id: int) -> tuple[str | None, list[dict], str
     _ensure_playwright_browsers()
     from playwright.sync_api import sync_playwright
 
+    tool_id = _resolve_panopto_tool_id(course_id) or _PANOPTO_TAB_TOOL_ID_FALLBACK
     r = requests.get(
         f"{CANVAS_URL}/api/v1/courses/{course_id}/external_tools/sessionless_launch"
-        f"?id={_PANOPTO_TAB_TOOL_ID}&launch_type=course_navigation",
+        f"?id={tool_id}&launch_type=course_navigation",
         headers=_canvas_headers(),
         timeout=30,
     )
     if r.status_code != 200:
+        tqdm.write(f"  [warn] Panopto tab launch failed (tool_id={tool_id}, status={r.status_code})")
         return None, [], None
     launch_url = r.json().get("url")
     if not launch_url:
@@ -768,9 +814,10 @@ def _get_stream_url(
         return None
 
     tqdm.write(f"  DeliveryInfo unavailable; re-launching via Canvas LTI…")
+    tool_id = _resolve_panopto_tool_id(course_id) or _PANOPTO_TAB_TOOL_ID_FALLBACK
     r2 = requests.get(
         f"{CANVAS_URL}/api/v1/courses/{course_id}/external_tools/sessionless_launch"
-        f"?id={_PANOPTO_TAB_TOOL_ID}&launch_type=course_navigation",
+        f"?id={tool_id}&launch_type=course_navigation",
         headers=_canvas_headers(), timeout=30,
     )
     if r2.status_code != 200:
