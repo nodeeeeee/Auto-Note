@@ -894,6 +894,53 @@ def _get_stream_url(
     return captured[0] if captured else None
 
 
+def _resolve_ffmpeg() -> str | None:
+    """Locate an ffmpeg executable.
+
+    Order:
+      1. System ffmpeg in PATH (best — usually fastest, tracks user updates)
+      2. imageio-ffmpeg's bundled binary (cross-platform fallback for macOS
+         and any system without ffmpeg installed; pip-installable, no admin
+         rights needed)
+    """
+    from shutil import which
+    sys_ff = which("ffmpeg")
+    if sys_ff:
+        return sys_ff
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def _run_ffmpeg_hls(stream_url: str, out_path: Path, progress_cb) -> None:
+    """Download an HLS master.m3u8 stream to *out_path* via ffmpeg.
+
+    Uses the bundled `imageio-ffmpeg` binary when no system ffmpeg is
+    present, so macOS users without Homebrew get a working downloader.
+    """
+    ff_bin = _resolve_ffmpeg()
+    if not ff_bin:
+        raise RuntimeError(
+            "ffmpeg not found. Install ffmpeg (e.g. `brew install ffmpeg` on "
+            "macOS or `choco install ffmpeg` on Windows), or `pip install "
+            "imageio-ffmpeg` for a bundled fallback."
+        )
+    cmd = [ff_bin, "-f", "hls", "-i", stream_url, "-c", "copy", str(out_path)]
+    try:
+        from ffmpeg_progress_yield import FfmpegProgress
+        ff = FfmpegProgress(cmd)
+        for pct in ff.run_command_with_progress():
+            progress_cb(pct)
+    except ImportError:
+        import subprocess
+        tqdm.write("  (ffmpeg-progress-yield not available, running ffmpeg without progress)")
+        cmd_y = [ff_bin, "-y", "-f", "hls", "-i", stream_url, "-c", "copy", str(out_path)]
+        subprocess.run(cmd_y, capture_output=True, timeout=3600)
+        progress_cb(100)
+
+
 def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
     """Download a single Panopto video with a tqdm progress bar.
 
@@ -987,28 +1034,11 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
             # Direct authenticated download (e.g. REST API DownloadUrl)
             _download_authenticated(stream_url, out_path, dl_headers, progress_cb)
         elif "master.m3u8" in stream_url:
-            # HLS stream — prefer ffmpeg, fall back to PanoptoDownloader
-            from shutil import which
-            if which("ffmpeg"):
-                try:
-                    from ffmpeg_progress_yield import FfmpegProgress
-                    cmd = ["ffmpeg", "-f", "hls", "-i", stream_url, "-c", "copy", str(out_path)]
-                    ff = FfmpegProgress(cmd)
-                    for pct in ff.run_command_with_progress():
-                        progress_cb(pct)
-                except ImportError:
-                    # ffmpeg-progress-yield not installed — call ffmpeg directly
-                    import subprocess
-                    tqdm.write("  (ffmpeg-progress-yield not available, running ffmpeg without progress)")
-                    subprocess.run(
-                        ["ffmpeg", "-y", "-f", "hls", "-i", stream_url, "-c", "copy", str(out_path)],
-                        capture_output=True, timeout=3600,
-                    )
-                    progress_cb(100)
-            elif PanoptoDownloader:
-                PanoptoDownloader.download(stream_url, str(out_path), progress_cb)
-            else:
-                raise RuntimeError("Neither ffmpeg nor PanoptoDownloader available")
+            # HLS stream — always use ffmpeg. PanoptoDownloader's HLS path
+            # is broken for URLs with query strings (its endswith('master.m3u8')
+            # check fails on the ?InvocationID=… suffix, raising NotAVideo —
+            # which is what macOS users hit when no system ffmpeg is in PATH).
+            _run_ffmpeg_hls(stream_url, out_path, progress_cb)
         elif PanoptoDownloader:
             PanoptoDownloader.download(stream_url, str(out_path), progress_cb)
         else:

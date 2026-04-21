@@ -73,7 +73,8 @@ const ML_COMPONENTS = {
     label: 'Core (required)',
     packages: ['tqdm', 'requests', 'pillow', 'httpx', 'openai', 'anthropic',
                'google-generativeai', 'canvasapi', 'pymupdf', 'python-pptx',
-               'python-docx', 'ffmpeg-progress-yield', 'pycryptodomex', 'yarl'],
+               'python-docx', 'ffmpeg-progress-yield', 'imageio-ffmpeg',
+               'pycryptodomex', 'yarl'],
     required: true,
   },
   whisper: {
