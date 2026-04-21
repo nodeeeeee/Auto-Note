@@ -901,17 +901,43 @@ def _resolve_ffmpeg() -> str | None:
       1. System ffmpeg in PATH (best — usually fastest, tracks user updates)
       2. imageio-ffmpeg's bundled binary (cross-platform fallback for macOS
          and any system without ffmpeg installed; pip-installable, no admin
-         rights needed)
+         rights needed). If imageio-ffmpeg isn't present (e.g. the user has
+         a venv from an older AutoNote release that pre-dates this fallback),
+         install it on demand — it's a single platform-specific wheel under
+         30 MB and the binary is cached for future runs.
     """
     from shutil import which
     sys_ff = which("ffmpeg")
     if sys_ff:
         return sys_ff
+
+    def _try_imageio() -> str | None:
+        try:
+            import imageio_ffmpeg
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            return None
+        except Exception as e:
+            tqdm.write(f"  [warn] imageio-ffmpeg get_ffmpeg_exe failed: {e}")
+            return None
+
+    ff = _try_imageio()
+    if ff:
+        return ff
+
+    # Auto-install on first need. Quiet, fast, idempotent.
+    tqdm.write("  ffmpeg not found locally — installing imageio-ffmpeg fallback…")
     try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
+        import subprocess as _sp
+        _sp.run(
+            [sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "imageio-ffmpeg"],
+            check=True, timeout=180,
+        )
+    except Exception as e:
+        tqdm.write(f"  [warn] auto-install imageio-ffmpeg failed: {e}")
         return None
+
+    return _try_imageio()
 
 
 def _run_ffmpeg_hls(stream_url: str, out_path: Path, progress_cb) -> None:

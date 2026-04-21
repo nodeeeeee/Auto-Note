@@ -996,7 +996,7 @@ function registerIpc() {
     if (hasPython) {
       try {
         const r = spawnSync(VENV_PYTHON,
-          ['-c', 'import tqdm, requests, openai, canvasapi, PIL, fitz, pptx; print("ok")'],
+          ['-c', 'import tqdm, requests, openai, canvasapi, PIL, fitz, pptx, imageio_ffmpeg; print("ok")'],
           { timeout: 10000, windowsHide: true });
         coreOk = (r.status === 0 && (r.stdout || '').toString().includes('ok'));
       } catch {}
