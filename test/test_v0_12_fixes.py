@@ -754,3 +754,101 @@ class TestRunFfmpegHlsHardening:
         assert callable(getattr(downloader, "_resolve_ffmpeg"))
         assert callable(getattr(downloader, "_resolve_panopto_tool_id"))
         assert callable(getattr(downloader, "_run_ffmpeg_hls"))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v0.12.11 — frame_extractor._get_pixels infinite-recursion regression
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetPixelsCompat:
+    """Regression for v0.12.11.
+
+    The old _get_pixels() was:
+        def _get_pixels(img):
+            if hasattr(img, 'get_flattened_data'):
+                return list(img.get_flattened_data())
+            return _get_pixels(img)   # ← infinite self-recursion on Pillow <12
+
+    This crashed with RecursionError at classify_video time on every user
+    whose Pillow version pre-dates get_flattened_data (12.0, Oct 2024). The
+    fix is to call list(img.getdata()) on the fallback branch.
+    """
+
+    def test_rgb_returns_tuples(self):
+        from PIL import Image
+        import frame_extractor as fe
+        img = Image.new("RGB", (3, 2), "red")
+        data = fe._get_pixels(img)
+        assert len(data) == 6
+        assert data[0] == (255, 0, 0)
+
+    def test_grayscale_returns_ints(self):
+        from PIL import Image
+        import frame_extractor as fe
+        img = Image.new("L", (2, 2), 128)
+        assert fe._get_pixels(img) == [128, 128, 128, 128]
+
+    def test_old_pillow_path_no_recursion(self):
+        """Simulate Pillow <12: object has getdata() but NOT get_flattened_data.
+
+        Before the fix, this raised RecursionError immediately.
+        """
+        import frame_extractor as fe
+
+        class FakeOldPillowImg:
+            def getdata(self):
+                return [(1, 2, 3), (4, 5, 6)]
+            # Crucially — no get_flattened_data
+
+        assert not hasattr(FakeOldPillowImg(), "get_flattened_data")
+        # This call used to recurse until Python raised RecursionError.
+        result = fe._get_pixels(FakeOldPillowImg())
+        assert result == [(1, 2, 3), (4, 5, 6)]
+
+    def test_depth_is_constant_not_recursive(self):
+        """Guard: _get_pixels must be O(1) stack depth, not recursive.
+
+        If the bug regressed, calling with a trivial object would add thousands
+        of frames before RecursionError. Here we just count that at most one
+        extra frame is added while inside _get_pixels.
+        """
+        import sys as _sys
+        import frame_extractor as fe
+
+        class FakeOldPillowImg:
+            def getdata(self):
+                return [0] * 10
+
+        baseline_depth = {"d": None}
+
+        def tracer(frame, event, arg):
+            if event == "call" and frame.f_code.co_name == "_get_pixels":
+                # Measure stack depth at entry
+                depth = 0
+                f = frame
+                while f:
+                    depth += 1
+                    f = f.f_back
+                if baseline_depth["d"] is None:
+                    baseline_depth["d"] = depth
+                else:
+                    # If recursive, this nested call would be baseline+1
+                    assert depth <= baseline_depth["d"], \
+                        "_get_pixels must not recurse"
+            return tracer
+
+        old_tracer = _sys.gettrace()
+        _sys.settrace(tracer)
+        try:
+            fe._get_pixels(FakeOldPillowImg())
+        finally:
+            _sys.settrace(old_tracer)
+
+    def test_classify_video_does_not_recurse(self, tmp_path):
+        """End-to-end: classify_video on a real sample must not hit recursion."""
+        import frame_extractor as fe
+        vp = PROJECT_DIR / "sample" / "85397" / "videos" / "Lecture 9 Link Layer ARP.mp4"
+        if not vp.exists():
+            pytest.skip("Sample video unavailable")
+        result = fe.classify_video(vp)
+        assert result in ("screen", "camera")

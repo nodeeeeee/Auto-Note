@@ -173,10 +173,19 @@ _JUNK_DESC_RE = re.compile(
 
 
 def _get_pixels(img):
-    """Get pixel data from a PIL Image, compatible with Pillow 14+."""
+    """Get pixel data from a PIL Image, compatible with old and new Pillow.
+
+    Pillow 12+ introduces `get_flattened_data()` and deprecates `getdata()`
+    (removed in Pillow 14). Both return the same shape — a 1-D sequence of
+    per-pixel values (tuples for RGB, ints for L).
+
+    The old fallback was `return _get_pixels(img)`, which recurses infinitely
+    on Pillow < 12 (no `get_flattened_data`) and crashed the frame extractor
+    on one user's install with a RecursionError at classify_video time.
+    """
     if hasattr(img, 'get_flattened_data'):
         return list(img.get_flattened_data())
-    return _get_pixels(img)
+    return list(img.getdata())
 
 
 # ── Screen vs Camera auto-detection ──────────────────────────────────────────
