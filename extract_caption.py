@@ -123,17 +123,113 @@ def save_manifest(manifest: dict) -> None:
         json.dump(manifest, f, indent=2)
 
 
+# ── ffmpeg/ffprobe resolution ─────────────────────────────────────────────────
+
+def _resolve_ffmpeg() -> str:
+    """Locate an ffmpeg executable.
+
+    Order: system PATH → imageio-ffmpeg bundled binary → auto-install
+    imageio-ffmpeg and retry. Raises RuntimeError if none are available.
+    Mirrors downloader._resolve_ffmpeg for consistency.
+    """
+    from shutil import which
+    sys_ff = which("ffmpeg")
+    if sys_ff:
+        return sys_ff
+
+    def _try_imageio() -> str | None:
+        try:
+            import imageio_ffmpeg
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            return None
+        except Exception as e:
+            print(f"  [warn] imageio-ffmpeg get_ffmpeg_exe failed: {e}")
+            return None
+
+    ff = _try_imageio()
+    if ff:
+        return ff
+
+    print("  ffmpeg not found locally — installing imageio-ffmpeg fallback…")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--quiet",
+             "--disable-pip-version-check", "imageio-ffmpeg"],
+            check=True, timeout=180,
+        )
+    except Exception as e:
+        raise RuntimeError(f"ffmpeg unavailable and auto-install failed: {e}") from e
+
+    ff = _try_imageio()
+    if not ff:
+        raise RuntimeError("ffmpeg unavailable after imageio-ffmpeg install")
+    return ff
+
+
+def _resolve_ffprobe() -> str | None:
+    """Locate ffprobe if available on system PATH.
+
+    Returns None if ffprobe isn't installed — callers should fall back to
+    parsing ffmpeg output. imageio-ffmpeg does not bundle ffprobe, so there
+    is no Python-package fallback for it.
+    """
+    from shutil import which
+    return which("ffprobe")
+
+
 # ── OpenAI API helpers ────────────────────────────────────────────────────────
 
+_DURATION_RE = None
+
+
+def _parse_ffmpeg_duration(stderr: str) -> float | None:
+    """Parse 'Duration: HH:MM:SS.ss' from ffmpeg -i stderr output."""
+    global _DURATION_RE
+    if _DURATION_RE is None:
+        import re
+        _DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+    m = _DURATION_RE.search(stderr or "")
+    if not m:
+        return None
+    h, mi, s = m.group(1), m.group(2), m.group(3)
+    return int(h) * 3600 + int(mi) * 60 + float(s)
+
+
 def _video_duration(video_path: Path) -> float:
-    """Return video duration in seconds via ffprobe."""
+    """Return video duration in seconds.
+
+    Prefers ffprobe (faster, structured output), falls back to parsing
+    ffmpeg's stderr when ffprobe isn't installed — which is common on
+    macOS users who get ffmpeg via imageio-ffmpeg but have no separate
+    ffprobe binary.
+    """
+    ffprobe = _resolve_ffprobe()
+    if ffprobe:
+        result = subprocess.run(
+            [ffprobe, "-v", "quiet", "-print_format", "json",
+             "-show_format", str(video_path)],
+            capture_output=True, text=True, check=True,
+            creationflags=_SUBPROCESS_FLAGS,
+        )
+        return float(json.loads(result.stdout)["format"]["duration"])
+
+    # Fallback: ffmpeg prints "Duration: HH:MM:SS.ss" to stderr when
+    # given -i with no output. Exit code is non-zero (no output file)
+    # so we don't use check=True here.
+    ff = _resolve_ffmpeg()
     result = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-print_format", "json",
-         "-show_format", str(video_path)],
-        capture_output=True, text=True, check=True,
+        [ff, "-hide_banner", "-i", str(video_path)],
+        capture_output=True, text=True, check=False,
         creationflags=_SUBPROCESS_FLAGS,
     )
-    return float(json.loads(result.stdout)["format"]["duration"])
+    dur = _parse_ffmpeg_duration(result.stderr)
+    if dur is None:
+        raise RuntimeError(
+            f"Could not determine duration of {video_path.name} — "
+            f"ffmpeg output did not contain a Duration line."
+        )
+    return dur
 
 
 def _extract_audio(video_path: Path, out_path: Path,
@@ -144,7 +240,8 @@ def _extract_audio(video_path: Path, out_path: Path,
     When *desc* is given, a tqdm progress bar is shown via ffmpeg-progress-yield.
     *total_sec* (or *duration*) is used as the known duration for the bar.
     """
-    cmd = ["ffmpeg", "-y", "-i", str(video_path)]
+    ff = _resolve_ffmpeg()
+    cmd = [ff, "-y", "-i", str(video_path)]
     if start > 0:
         cmd += ["-ss", str(start)]
     if duration is not None:
