@@ -946,6 +946,12 @@ def _run_ffmpeg_hls(stream_url: str, out_path: Path, progress_cb) -> None:
 
     Uses the bundled `imageio-ffmpeg` binary when no system ffmpeg is
     present, so macOS users without Homebrew get a working downloader.
+
+    Dropping `-f hls` lets ffmpeg auto-detect from the URL — this is more
+    robust when the master playlist references a mixed-protocol variant set.
+    `-map 0` keeps all streams from the selected variant (video + audio).
+    Non-zero exit codes are surfaced as RuntimeError so partial/empty files
+    don't silently get written to disk.
     """
     ff_bin = _resolve_ffmpeg()
     if not ff_bin:
@@ -954,17 +960,40 @@ def _run_ffmpeg_hls(stream_url: str, out_path: Path, progress_cb) -> None:
             "macOS or `choco install ffmpeg` on Windows), or `pip install "
             "imageio-ffmpeg` for a bundled fallback."
         )
-    cmd = [ff_bin, "-f", "hls", "-i", stream_url, "-c", "copy", str(out_path)]
+    # -y            : overwrite partial leftovers from a prior failed attempt
+    # -loglevel error: only surface real errors (progress plugin reads stderr)
+    # -map 0        : keep every stream of the selected variant (a/v)
+    # -c copy       : no re-encoding; lossless + fast
+    cmd = [
+        ff_bin, "-y", "-loglevel", "error",
+        "-i", stream_url,
+        "-map", "0",
+        "-c", "copy",
+        str(out_path),
+    ]
     try:
         from ffmpeg_progress_yield import FfmpegProgress
         ff = FfmpegProgress(cmd)
         for pct in ff.run_command_with_progress():
             progress_cb(pct)
+        # FfmpegProgress doesn't raise on non-zero exit; inspect the
+        # resulting file to catch silent failures.
+        if not out_path.exists() or out_path.stat().st_size < 1024:
+            raise RuntimeError(
+                f"ffmpeg produced no output for {out_path.name} — "
+                f"check network connectivity or stream auth."
+            )
     except ImportError:
-        import subprocess
         tqdm.write("  (ffmpeg-progress-yield not available, running ffmpeg without progress)")
-        cmd_y = [ff_bin, "-y", "-f", "hls", "-i", stream_url, "-c", "copy", str(out_path)]
-        subprocess.run(cmd_y, capture_output=True, timeout=3600)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=3600,
+        )
+        if result.returncode != 0:
+            tail = (result.stderr or "").strip().splitlines()[-10:]
+            raise RuntimeError(
+                f"ffmpeg failed (exit {result.returncode}):\n"
+                + "\n".join(tail)
+            )
         progress_cb(100)
 
 

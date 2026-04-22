@@ -43,6 +43,97 @@ COURSE_DATA_DIR = Path(_out_dir) if _out_dir else Path.home() / "AutoNote"
 # Prevent console windows flashing on Windows
 _SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
+
+# ── ffmpeg/ffprobe resolution ─────────────────────────────────────────────────
+# macOS users without Homebrew get ffmpeg via the `imageio-ffmpeg` wheel, which
+# does NOT ship `ffprobe`. Without these resolvers, every subprocess call below
+# raised FileNotFoundError and produced zero frames — silently, because the
+# code only checks whether the output PNG exists afterwards. That turned into
+# "screen recording not captured" in generated notes on EE4802 test runs.
+
+_FFMPEG_BIN: str | None = None
+_FFPROBE_BIN: str | None = None  # None sentinel means "resolved; unavailable"
+_FFPROBE_RESOLVED = False
+
+
+def _resolve_ffmpeg() -> str:
+    """Locate an ffmpeg executable.
+
+    Order: system PATH → imageio-ffmpeg bundled binary → auto-install. Raises
+    RuntimeError if none works. Result is cached so resolution cost is paid
+    once per process.
+    """
+    global _FFMPEG_BIN
+    if _FFMPEG_BIN:
+        return _FFMPEG_BIN
+
+    from shutil import which
+    sys_ff = which("ffmpeg")
+    if sys_ff:
+        _FFMPEG_BIN = sys_ff
+        return sys_ff
+
+    def _try_imageio() -> str | None:
+        try:
+            import imageio_ffmpeg
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            return None
+        except Exception as e:
+            print(f"  [warn] imageio-ffmpeg get_ffmpeg_exe failed: {e}")
+            return None
+
+    ff = _try_imageio()
+    if ff:
+        _FFMPEG_BIN = ff
+        return ff
+
+    print("  ffmpeg not found locally — installing imageio-ffmpeg fallback…")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--quiet",
+             "--disable-pip-version-check", "imageio-ffmpeg"],
+            check=True, timeout=180,
+        )
+    except Exception as e:
+        raise RuntimeError(f"ffmpeg unavailable and auto-install failed: {e}") from e
+
+    ff = _try_imageio()
+    if not ff:
+        raise RuntimeError("ffmpeg unavailable after imageio-ffmpeg install")
+    _FFMPEG_BIN = ff
+    return ff
+
+
+def _resolve_ffprobe() -> str | None:
+    """Locate ffprobe on system PATH. Returns None when unavailable.
+
+    imageio-ffmpeg doesn't bundle ffprobe, so when only it is available we
+    fall back to parsing `ffmpeg -i` stderr for duration.
+    """
+    global _FFPROBE_BIN, _FFPROBE_RESOLVED
+    if _FFPROBE_RESOLVED:
+        return _FFPROBE_BIN
+    from shutil import which
+    _FFPROBE_BIN = which("ffprobe")
+    _FFPROBE_RESOLVED = True
+    return _FFPROBE_BIN
+
+
+_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def _parse_ffmpeg_duration(stderr: str | None) -> float | None:
+    """Parse 'Duration: HH:MM:SS.ss' from ffmpeg -i stderr."""
+    if not stderr:
+        return None
+    m = _DURATION_RE.search(stderr)
+    if not m:
+        return None
+    h, mi, s = m.group(1), m.group(2), m.group(3)
+    return int(h) * 3600 + int(mi) * 60 + float(s)
+
+
 # ── Tunable constants ────────────────────────────────────────────────────────
 
 # Scene detection threshold: lower = more sensitive (more frames extracted).
@@ -115,10 +206,11 @@ def classify_video(video_path: Path) -> str:
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="classify_"))
     frame_paths = []
+    ff_bin = _resolve_ffmpeg()
     for i, ts in enumerate(timestamps):
         png = tmp_dir / f"sample_{i}.png"
         subprocess.run(
-            ["ffmpeg", "-ss", f"{ts:.1f}", "-i", str(video_path),
+            [ff_bin, "-ss", f"{ts:.1f}", "-i", str(video_path),
              "-frames:v", "1", "-q:v", "2", str(png), "-y"],
             capture_output=True, timeout=30,
             creationflags=_SUBPROCESS_FLAGS,
@@ -287,8 +379,9 @@ def detect_scenes(video_path: Path, threshold: float = SCENE_THRESHOLD,
         always_periodic = False
 
     # ── Pass 1: ffmpeg scene detection ───────────────────────────────────────
+    ff_bin = _resolve_ffmpeg()
     cmd = [
-        "ffmpeg", "-i", str(video_path),
+        ff_bin, "-i", str(video_path),
         "-vf", f"select='gt(scene\\,{threshold})',showinfo",
         "-vsync", "vfr",
         "-f", "null", "-"
@@ -348,7 +441,7 @@ def detect_scenes(video_path: Path, threshold: float = SCENE_THRESHOLD,
         for ts in raw_timestamps[:MAX_FRAMES * 2]:
             png = tmp_dir / f"cand_{ts:.1f}.png"
             subprocess.run(
-                ["ffmpeg", "-ss", f"{ts:.3f}", "-i", str(video_path),
+                [ff_bin, "-ss", f"{ts:.3f}", "-i", str(video_path),
                  "-frames:v", "1", "-q:v", "3", str(png), "-y"],
                 capture_output=True, timeout=30,
                 creationflags=_SUBPROCESS_FLAGS,
@@ -409,19 +502,37 @@ def detect_scenes(video_path: Path, threshold: float = SCENE_THRESHOLD,
 
 
 def get_video_duration(video_path: Path) -> float:
-    """Get video duration in seconds using ffprobe."""
-    cmd = [
-        "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)
-    ]
+    """Return video duration in seconds.
+
+    Uses ffprobe when available, falls back to parsing ffmpeg's stderr
+    ('Duration: HH:MM:SS.ss'). The fallback is the path macOS users hit
+    when they only have the imageio-ffmpeg wheel — which bundles ffmpeg
+    but not ffprobe.
+    """
+    ffprobe = _resolve_ffprobe()
+    if ffprobe:
+        result = subprocess.run(
+            [ffprobe, "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
+            capture_output=True, text=True, timeout=30,
+            creationflags=_SUBPROCESS_FLAGS,
+        )
+        try:
+            return float(result.stdout.strip())
+        except (ValueError, AttributeError):
+            return 0.0
+
+    try:
+        ff = _resolve_ffmpeg()
+    except RuntimeError:
+        return 0.0
     result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=30,
+        [ff, "-hide_banner", "-i", str(video_path)],
+        capture_output=True, text=True, timeout=30,
         creationflags=_SUBPROCESS_FLAGS,
     )
-    try:
-        return float(result.stdout.strip())
-    except (ValueError, AttributeError):
-        return 0.0
+    dur = _parse_ffmpeg_duration(result.stderr)
+    return dur if dur is not None else 0.0
 
 
 # ── Per-frame screen/camera classification ────────────────────────────────────
@@ -658,7 +769,7 @@ def extract_frames(video_path: Path, timestamps: list[float],
             continue
 
         cmd = [
-            "ffmpeg", "-ss", f"{ts:.3f}",
+            _resolve_ffmpeg(), "-ss", f"{ts:.3f}",
             "-i", str(video_path),
             "-frames:v", "1",
             "-q:v", "2",

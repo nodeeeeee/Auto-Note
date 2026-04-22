@@ -8,6 +8,8 @@ Covers:
   - Issue #6: subprocess must be top-level in downloader
   - Issue #7: ffprobe unavailable → fall back to ffmpeg stderr parsing
   - v0.12.4/5: Panopto tool-ID dynamic resolution via /tabs
+  - v0.12.10: frame_extractor.py ffmpeg resolver (screen-recording capture)
+  - v0.12.10: _run_ffmpeg_hls raises on silent ffmpeg failure
 
 These tests avoid all network, GPU, and OpenAI API usage. The only optional
 external dependency is a system ffmpeg binary for the end-to-end duration
@@ -494,6 +496,258 @@ class TestModuleSmoke:
         assert callable(getattr(ec, "_resolve_ffprobe"))
         assert callable(getattr(ec, "_parse_ffmpeg_duration"))
         assert callable(getattr(ec, "_video_duration"))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v0.12.10 — frame_extractor.py ffmpeg resolver (screen-recording capture)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFrameExtractorResolvers:
+    """Regression for v0.12.10 — silent 'no screen capture' on macOS.
+
+    Before this release, frame_extractor.py used bare 'ffmpeg'/'ffprobe'
+    strings, so users with only imageio-ffmpeg (no system ffmpeg) got zero
+    extracted frames and EE4802-style screen recordings ended up classified
+    as 'camera', producing notes with no slide content.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        """Clear the module-level resolver caches so monkeypatching takes effect."""
+        import frame_extractor as fe
+        fe._FFMPEG_BIN = None
+        fe._FFPROBE_BIN = None
+        fe._FFPROBE_RESOLVED = False
+        yield
+        fe._FFMPEG_BIN = None
+        fe._FFPROBE_BIN = None
+        fe._FFPROBE_RESOLVED = False
+
+    def test_has_resolver_functions(self):
+        """v0.12.10 contract — these symbols MUST exist."""
+        import frame_extractor as fe
+        assert callable(getattr(fe, "_resolve_ffmpeg"))
+        assert callable(getattr(fe, "_resolve_ffprobe"))
+        assert callable(getattr(fe, "_parse_ffmpeg_duration"))
+
+    def test_no_bare_ffmpeg_literals_remain(self):
+        """Guard: no remaining literal 'ffmpeg'/'ffprobe' strings as exec targets."""
+        src = (PROJECT_DIR / "frame_extractor.py").read_text()
+        # Count non-resolver occurrences. Resolvers themselves use which("ffmpeg")
+        # and which("ffprobe") as *arguments*, which is fine; callable lists like
+        # ["ffmpeg", ...] are the bug.
+        import re as _re
+        bad = _re.findall(r'\[\s*"ffmpeg"\s*,|\[\s*"ffprobe"\s*,', src)
+        assert bad == [], f"found bare literal launch lists: {bad}"
+
+    def test_resolve_ffmpeg_prefers_system(self, monkeypatch):
+        import frame_extractor as fe
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None)
+        assert fe._resolve_ffmpeg() == "/usr/bin/ffmpeg"
+
+    def test_resolve_ffmpeg_falls_back_to_imageio(self, monkeypatch):
+        import frame_extractor as fe
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        fake = MagicMock()
+        fake.get_ffmpeg_exe.return_value = "/imageio/ffmpeg"
+        monkeypatch.setitem(sys.modules, "imageio_ffmpeg", fake)
+        assert fe._resolve_ffmpeg() == "/imageio/ffmpeg"
+
+    def test_resolve_ffmpeg_raises_when_unresolvable(self, monkeypatch):
+        import frame_extractor as fe
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+
+        def fake_run(cmd, **kw):
+            raise RuntimeError("pip fail")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(RuntimeError, match="ffmpeg unavailable"):
+            fe._resolve_ffmpeg()
+
+    def test_resolve_ffmpeg_is_cached(self, monkeypatch):
+        """Hot path — resolving ffmpeg hundreds of times per video must not hit disk repeatedly."""
+        import frame_extractor as fe
+        calls = {"count": 0}
+
+        def counting_which(name):
+            calls["count"] += 1
+            return "/usr/bin/ffmpeg" if name == "ffmpeg" else None
+
+        monkeypatch.setattr("shutil.which", counting_which)
+        fe._resolve_ffmpeg()
+        fe._resolve_ffmpeg()
+        fe._resolve_ffmpeg()
+        assert calls["count"] == 1
+
+    def test_resolve_ffprobe_returns_none_when_missing(self, monkeypatch):
+        import frame_extractor as fe
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        assert fe._resolve_ffprobe() is None
+
+    def test_resolve_ffprobe_is_cached(self, monkeypatch):
+        import frame_extractor as fe
+        calls = {"count": 0}
+
+        def counting_which(name):
+            calls["count"] += 1
+            return "/usr/bin/ffprobe" if name == "ffprobe" else None
+
+        monkeypatch.setattr("shutil.which", counting_which)
+        fe._resolve_ffprobe()
+        fe._resolve_ffprobe()
+        fe._resolve_ffprobe()
+        assert calls["count"] == 1
+
+
+class TestFrameExtractorDurationFallback:
+    """Regression for screen-recording capture: get_video_duration must work
+    without ffprobe — otherwise downstream slide alignment gets 0s duration
+    and every frame lands on 'slide 1'."""
+
+    @pytest.fixture()
+    def sample_video(self):
+        vp = PROJECT_DIR / "sample" / "85397" / "videos" / "Lecture 9 Link Layer ARP.mp4"
+        if not vp.exists():
+            pytest.skip(f"Sample video not available: {vp}")
+        return vp
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        import frame_extractor as fe
+        fe._FFMPEG_BIN = None
+        fe._FFPROBE_BIN = None
+        fe._FFPROBE_RESOLVED = False
+        yield
+
+    def test_both_paths_agree(self, sample_video, monkeypatch):
+        import frame_extractor as fe
+        if fe._resolve_ffprobe() is None:
+            pytest.skip("ffprobe not installed; cannot cross-validate")
+        d_ffprobe = fe.get_video_duration(sample_video)
+        # Force fallback path.
+        monkeypatch.setattr(fe, "_resolve_ffprobe", lambda: None)
+        d_ffmpeg = fe.get_video_duration(sample_video)
+        assert d_ffprobe > 0
+        assert d_ffmpeg > 0
+        assert abs(d_ffprobe - d_ffmpeg) < 0.5
+
+    def test_zero_on_unparseable(self, tmp_path, monkeypatch):
+        """Bad input should return 0.0, not raise — matches old ffprobe semantics."""
+        import frame_extractor as fe
+        not_a_video = tmp_path / "garbage.mp4"
+        not_a_video.write_bytes(b"not a video")
+        monkeypatch.setattr(fe, "_resolve_ffprobe", lambda: None)
+        assert fe.get_video_duration(not_a_video) == 0.0
+
+
+class TestRunFfmpegHlsHardening:
+    """v0.12.10 — silent ffmpeg failures must surface as errors.
+
+    Before this release, `_run_ffmpeg_hls` swallowed non-zero exit codes and
+    produced broken/empty mp4s that downstream pipeline stages tried to process,
+    yielding 'no screen recording captured' in the user's notes.
+    """
+
+    def test_raises_when_output_file_never_appears(self, tmp_path, monkeypatch):
+        import downloader as dl
+        out_path = tmp_path / "out.mp4"
+
+        # Fake FfmpegProgress that reports 100% but writes no file.
+        class FakeFfmpeg:
+            def __init__(self, cmd):
+                pass
+            def run_command_with_progress(self):
+                yield 100
+
+        fake_mod = MagicMock()
+        fake_mod.FfmpegProgress = FakeFfmpeg
+        monkeypatch.setitem(sys.modules, "ffmpeg_progress_yield", fake_mod)
+        monkeypatch.setattr(dl, "_resolve_ffmpeg", lambda: "/fake/ffmpeg")
+
+        with pytest.raises(RuntimeError, match="produced no output"):
+            dl._run_ffmpeg_hls("https://cdn/master.m3u8", out_path, lambda p: None)
+
+    def test_raises_when_output_is_tiny(self, tmp_path, monkeypatch):
+        """1-byte file counts as silent failure."""
+        import downloader as dl
+        out_path = tmp_path / "out.mp4"
+        out_path.write_bytes(b"x")  # tiny
+
+        class FakeFfmpeg:
+            def __init__(self, cmd):
+                pass
+            def run_command_with_progress(self):
+                yield 100
+
+        fake_mod = MagicMock()
+        fake_mod.FfmpegProgress = FakeFfmpeg
+        monkeypatch.setitem(sys.modules, "ffmpeg_progress_yield", fake_mod)
+        monkeypatch.setattr(dl, "_resolve_ffmpeg", lambda: "/fake/ffmpeg")
+
+        with pytest.raises(RuntimeError, match="produced no output"):
+            dl._run_ffmpeg_hls("https://cdn/master.m3u8", out_path, lambda p: None)
+
+    def test_no_raise_on_real_output(self, tmp_path, monkeypatch):
+        """When ffmpeg produces a reasonable-sized file, no error."""
+        import downloader as dl
+        out_path = tmp_path / "out.mp4"
+
+        class FakeFfmpeg:
+            def __init__(self, cmd):
+                pass
+            def run_command_with_progress(self):
+                # Simulate writing a file during progress
+                out_path.write_bytes(b"\x00" * 5000)
+                yield 100
+
+        fake_mod = MagicMock()
+        fake_mod.FfmpegProgress = FakeFfmpeg
+        monkeypatch.setitem(sys.modules, "ffmpeg_progress_yield", fake_mod)
+        monkeypatch.setattr(dl, "_resolve_ffmpeg", lambda: "/fake/ffmpeg")
+
+        calls = []
+        dl._run_ffmpeg_hls("https://cdn/master.m3u8", out_path, lambda p: calls.append(p))
+        assert 100 in calls
+
+    def test_raises_on_nonzero_exit_when_no_progress_lib(self, tmp_path, monkeypatch):
+        """No ffmpeg-progress-yield installed, non-zero returncode → RuntimeError."""
+        import downloader as dl
+        out_path = tmp_path / "out.mp4"
+
+        monkeypatch.setitem(sys.modules, "ffmpeg_progress_yield", None)
+        monkeypatch.setattr(dl, "_resolve_ffmpeg", lambda: "/fake/ffmpeg")
+
+        def fake_run(cmd, **kw):
+            return MagicMock(returncode=1, stderr="ffmpeg: Connection refused\n")
+
+        monkeypatch.setattr(dl.subprocess, "run", fake_run)
+        with pytest.raises(RuntimeError) as exc_info:
+            dl._run_ffmpeg_hls("https://cdn/master.m3u8", out_path, lambda p: None)
+        msg = str(exc_info.value)
+        assert "ffmpeg failed" in msg
+        assert "Connection refused" in msg
+
+    def test_no_y_flag_bug_regression(self, tmp_path, monkeypatch):
+        """The ffmpeg command must include -y so stale leftovers don't cause an
+        interactive overwrite prompt that deadlocks the subprocess."""
+        import downloader as dl
+        captured_cmd = {"cmd": None}
+
+        class FakeFfmpeg:
+            def __init__(self, cmd):
+                captured_cmd["cmd"] = cmd
+            def run_command_with_progress(self):
+                (tmp_path / "out.mp4").write_bytes(b"\x00" * 5000)
+                yield 100
+
+        fake_mod = MagicMock()
+        fake_mod.FfmpegProgress = FakeFfmpeg
+        monkeypatch.setitem(sys.modules, "ffmpeg_progress_yield", fake_mod)
+        monkeypatch.setattr(dl, "_resolve_ffmpeg", lambda: "/fake/ffmpeg")
+
+        dl._run_ffmpeg_hls("https://cdn/master.m3u8", tmp_path / "out.mp4", lambda p: None)
+        assert "-y" in captured_cmd["cmd"], "must pass -y to avoid overwrite prompt deadlock"
 
     def test_downloader_has_resolvers(self):
         import downloader
