@@ -996,6 +996,19 @@ def build_pipeline(page: ft.Page, console: OutputConsole) -> ft.Column:
     # Per-video notes are the default (one note per video, named after the
     # video). Toggle off to merge everything into one course-wide file.
     per_video_sw = ft.Switch(label="Per-video notes", value=True, active_color=C_PRIMARY)
+    # Image source: video screenshots (frames) by default, or PDF slide renders.
+    # Falls back to the other source if the chosen one isn't available.
+    image_src_val = {"v": "frames"}
+    image_src_dd = ft.Dropdown(
+        label="Image source",
+        value="frames",
+        options=[
+            ft.dropdown.Option("frames", "Video screenshots (default)"),
+            ft.dropdown.Option("slides", "Slide PDFs"),
+        ],
+        on_change=lambda e: image_src_val.update({"v": e.data or e.control.value}),
+        width=260,
+    )
 
     def _run(_):
         cid  = int(course_val["v"])
@@ -1050,6 +1063,8 @@ def build_pipeline(page: ft.Page, console: OutputConsole) -> ft.Column:
             if not per_video_sw.value:
                 # Per-video is the default; opt in to the merged layout.
                 c.append("--merged")
+            if image_src_val["v"] != "frames":
+                c += ["--image-source", image_src_val["v"]]
             cmds.append(("Generate notes", c))
 
         def _chain(idx: int = 0) -> None:
@@ -1087,6 +1102,7 @@ def build_pipeline(page: ft.Page, console: OutputConsole) -> ft.Column:
                 ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER,
                    expand=True),
                 lec_filter_f,
+                image_src_dd,
                 force_sw,
                 per_video_sw,
             ], spacing=8), padding=16),
@@ -1674,6 +1690,18 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
     # Per-video output is the default; toggle off to get a single combined file.
     per_video_sw = ft.Switch(label="Per-video notes (one file per video)",
                               value=True, active_color=C_PRIMARY)
+    # Image source: video screenshots (frames) vs PDF slide renders.
+    image_src_val = {"v": "frames"}
+    image_src_dd = ft.Dropdown(
+        label="Image source",
+        value="frames",
+        options=[
+            ft.dropdown.Option("frames", "Video screenshots (default)"),
+            ft.dropdown.Option("slides", "Slide PDFs"),
+        ],
+        on_change=lambda e: image_src_val.update({"v": e.data or e.control.value}),
+        width=260,
+    )
 
     note_model   = _read_constant("generate", "NOTE_MODEL")
     verify_model = _read_constant("generate", "VERIFY_MODEL")
@@ -1696,6 +1724,8 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
             cmd.append("--iterate")
         if not per_video_sw.value:
             cmd.append("--merged")
+        if image_src_val["v"] != "frames":
+            cmd += ["--image-source", image_src_val["v"]]
         console.run(cmd)
 
     detail_styles = [
@@ -1743,6 +1773,7 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
                            color=ft.Colors.with_opacity(0.08, ft.Colors.WHITE)),
                 _label("Options"),
                 per_video_sw,
+                image_src_dd,
                 force_sw,
                 merge_sw,
                 iterate_sw,

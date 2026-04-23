@@ -1730,15 +1730,25 @@ def _discover_screenshare_lectures(course_dir: Path) -> list[LectureData]:
     return lectures
 
 
-def _discover_video_lectures(course_dir: Path) -> list[LectureData]:
+def _discover_video_lectures(course_dir: Path,
+                             image_source: str = "frames") -> list[LectureData]:
     """Video-centric discovery: iterate captions and pair each with its
     matching slides/frames.
+
+    image_source controls which image source the note generator prefers:
+      "frames" (default) — use extracted video frames when available,
+                           otherwise fall back to slide PDFs, otherwise
+                           transcript-only pseudo-slides.
+      "slides"           — prefer slide PDFs, fall back to frames, then
+                           transcript-only.
 
     This is the default discovery mode because each downloaded video should
     produce one note — even when no slide file matches (the note is then
     generated from the transcript alone). The returned LectureData list
     preserves caption order, and `num` is assigned sequentially.
     """
+    if image_source not in ("frames", "slides"):
+        image_source = "frames"
     captions_dir = course_dir / "captions"
     align_dir    = course_dir / "alignment"
     frames_dir   = course_dir / "frames"
@@ -1777,43 +1787,68 @@ def _discover_video_lectures(course_dir: Path) -> list[LectureData]:
                 alignment_by_caption.setdefault(cap_stem, []).append(af)
 
     lectures: list[LectureData] = []
-    for num, cap in enumerate(captions, start=1):
+    def _try_frames(num, cap) -> LectureData | None:
+        """Return a screenshare LectureData when frames + alignment exist."""
         stem = cap.stem
-        # Preferred order per memory: frame extraction scores higher than PDF
-        # slide alignment, so screenshare wins when both exist.
-        if stem in screenshare_by_caption:
-            frame_dir = frames_dir / stem
-            if frame_dir.exists() and any(frame_dir.glob("frame_*.png")):
-                lectures.append(LectureData(
-                    num, frame_dir, screenshare_by_caption[stem],
-                    source="screenshare", frame_dir=frame_dir,
-                ))
-                continue
-            # Screenshare alignment exists but frames are gone — skip to
-            # slide-based path so we at least emit some output.
+        if stem not in screenshare_by_caption:
+            return None
+        frame_dir = frames_dir / stem
+        if not (frame_dir.exists() and any(frame_dir.glob("frame_*.png"))):
+            return None
+        return LectureData(num, frame_dir, screenshare_by_caption[stem],
+                           source="screenshare", frame_dir=frame_dir)
 
-        aligns = alignment_by_caption.get(stem, [])
-        if aligns:
-            # One note per video: if multiple slide files align to the same
-            # caption, keep them all as file_idx parts.
-            for fi, af in enumerate(aligns, start=1):
-                try:
-                    with open(af, encoding="utf-8") as fh:
-                        data = json.load(fh)
-                except Exception:
-                    data = {}
-                slide_file = data.get("slide_file", "")
-                slide_path = mat_dir / slide_file if slide_file else None
-                if slide_path and not slide_path.exists():
-                    cands = list(mat_dir.rglob(slide_file)) if slide_file else []
-                    slide_path = cands[0] if cands else None
-                if slide_path is None:
-                    # No slide on disk — fall through and treat as transcript-only
-                    continue
-                lectures.append(LectureData(num, slide_path, af, file_idx=fi))
-            # If we appended at least one slide-based entry, we're done.
-            if any(ld.num == num for ld in lectures):
+    def _try_slides(num, cap) -> list[LectureData]:
+        """Return slide-based LectureData(s) for this caption — empty when no
+        slide file is available."""
+        aligns = alignment_by_caption.get(cap.stem, [])
+        out: list[LectureData] = []
+        for fi, af in enumerate(aligns, start=1):
+            try:
+                with open(af, encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except Exception:
+                data = {}
+            slide_file = data.get("slide_file", "")
+            slide_path = mat_dir / slide_file if slide_file else None
+            if slide_path and not slide_path.exists():
+                cands = list(mat_dir.rglob(slide_file)) if slide_file else []
+                slide_path = cands[0] if cands else None
+            if slide_path is None:
                 continue
+            out.append(LectureData(num, slide_path, af, file_idx=fi))
+        return out
+
+    for num, cap in enumerate(captions, start=1):
+        tried_first_source = image_source
+        first_ld: LectureData | None = None
+        first_list: list[LectureData] = []
+
+        if image_source == "slides":
+            first_list = _try_slides(num, cap)
+            if not first_list:
+                # Fall back to frames when the user asked for slides but none
+                # are on disk.
+                fb = _try_frames(num, cap)
+                if fb is not None:
+                    tqdm.write(f"  [{cap.stem}] slides requested but none found — "
+                               f"falling back to video frames")
+                    lectures.append(fb)
+                    continue
+        else:  # "frames" (default)
+            first_ld = _try_frames(num, cap)
+            if first_ld is not None:
+                lectures.append(first_ld)
+                continue
+            # Fall back to slides when frames were requested but none extracted.
+            first_list = _try_slides(num, cap)
+            if first_list:
+                tqdm.write(f"  [{cap.stem}] video frames not available — "
+                           f"using slide PDFs instead")
+
+        if first_list:
+            lectures.extend(first_list)
+            continue
 
         # No alignment + no screenshare frames: emit a transcript-only
         # LectureData. The "slide_path" points to the caption so the note
@@ -2063,6 +2098,12 @@ def main() -> None:
                         help="[legacy] Iterate slide files first when building "
                              "the lecture list; by default the pipeline is "
                              "video-centric and iterates captions.")
+    parser.add_argument("--image-source", metavar="SRC", default="frames",
+                        choices=["frames", "slides"],
+                        help="Image source for notes: 'frames' (video "
+                             "screenshots, default) or 'slides' (PDF slide "
+                             "renders). Falls back to the other source when "
+                             "the preferred one is not available.")
     parser.add_argument("--language",   metavar="LANG", default=None,
                         choices=["en", "zh"],
                         help="Note language: en (English) or zh (Chinese). "
@@ -2091,7 +2132,8 @@ def main() -> None:
         if args.slide_centric:
             lectures = _discover_lectures(course_dir)
         else:
-            lectures = _discover_video_lectures(course_dir)
+            lectures = _discover_video_lectures(course_dir,
+                                                image_source=args.image_source)
             if not lectures:
                 # No captions yet — fall back to slide-based discovery so users
                 # can still generate notes from raw slides without running
