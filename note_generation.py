@@ -65,6 +65,7 @@ DETAIL_LEVEL      = 7
 OUTPUT_FORMAT     = "md"
 NOTE_MODEL        = "gpt-5.1"
 VERIFY_MODEL      = "gpt-4o"
+TRANSLATE_MODEL   = "gpt-4o"   # Chinese/other translation post-pass — gpt-4o is cheap enough
 VERIFY_NOTES      = True
 QUALITY_TARGET    = 8.0
 IMAGE_RENDER_SCALE = 1.5
@@ -211,7 +212,7 @@ def _detail_instr(level: int) -> str:
 
 # ── Image filter constants ────────────────────────────────────────────────────
 
-IMAGE_FILTER_MODEL      = "gpt-4o-mini"
+IMAGE_FILTER_MODEL      = "gpt-4o"
 IMAGE_FILTER_WORD_MAX   = 12   # slides with ≤ this many words → remove without API call
 IMAGE_FILTER_HEURISTIC  = 80   # slides with > this many words AND no code/desc → remove
 
@@ -534,7 +535,7 @@ def _translate(text: str, lang: str) -> str:
         f"时使用同一个 key。\n\n"
         f"---\n\n{text}"
     )
-    return _call(NOTE_MODEL, system, prompt, len(text) * 3)
+    return _call(TRANSLATE_MODEL, system, prompt, len(text) * 3)
 
 
 def _call(model: str, system: str, user: str, max_tokens: int,
