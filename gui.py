@@ -1038,12 +1038,15 @@ def build_pipeline(page: ft.Page, console: OutputConsole) -> ft.Column:
         if "transcribe" in steps:
             cmds.append(("Transcribe", [PYTHON, str(SCRIPTS["transcribe"])]))
 
-        # Frame extraction for screen share videos (runs between transcribe and align)
+        # Frame extraction for screen share videos (runs between transcribe and align).
+        # Skip entirely when the user is planning to generate notes from slide
+        # PDFs — the frames and per-frame vision descriptions are never read.
         if "align" in steps:
-            cmds.append(("Extract frames (screen share)",
-                         [PYTHON, str(SCRIPTS["frame_extractor"]),
-                          "--course", str(cid),
-                          "--path", str(_get_output_dir())]))
+            if image_src_val["v"] != "slides":
+                cmds.append(("Extract frames (screen share)",
+                             [PYTHON, str(SCRIPTS["frame_extractor"]),
+                              "--course", str(cid),
+                              "--path", str(_get_output_dir())]))
             # Use saved mapping if it exists
             mapping_file = _get_output_dir() / str(cid) / "alignment" / "video_slide_mapping.json"
             align_cmd = [PYTHON, str(SCRIPTS["align"]), "--course", str(cid)]

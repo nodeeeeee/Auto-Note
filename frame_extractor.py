@@ -976,7 +976,8 @@ def extract_and_align(
 
 # ── Course-level auto-discovery ──────────────────────────────────────────────
 
-def process_course(course_id: str, base_dir: Path) -> int:
+def process_course(course_id: str, base_dir: Path,
+                   force_screen: bool = False) -> int:
     """Auto-discover videos for a course, classify them, and extract frames.
 
     Reads the manifest to find all downloaded videos for the course.
@@ -1037,9 +1038,16 @@ def process_course(course_id: str, base_dir: Path) -> int:
             print(f"  [skip] No caption for: {video_stem} (transcribe first)")
             continue
 
-        # For SS/OBJECT-tagged streams, skip classification (known screen content)
+        # Skip the camera/screen classifier when we know the source Panopto
+        # recording includes screen content:
+        #   - stream_tag is SS or OBJECT (direct screen stream)
+        #   - has_screen_stream is True (DV was picked only because OBJECT
+        #     lacked an audio track; the screen content is still in the DV
+        #     mix because Panopto PIP-composites it for DV playback).
         tag = entry.get("stream_tag", "").upper()
-        skip_classify = (tag in ("SS", "OBJECT"))
+        has_screen = tag in ("SS", "OBJECT") or bool(
+            entry.get("has_screen_stream", False))
+        skip_classify = force_screen or has_screen
         result = extract_and_align(video_path, caption_path, course_dir,
                                    skip_classify=skip_classify,
                                    stream_tag=tag)
@@ -1072,13 +1080,18 @@ def main() -> None:
     parser.add_argument("--path", help="Base output directory (for --course mode)")
     parser.add_argument("--threshold", type=float, default=SCENE_THRESHOLD,
                         help=f"Scene detection threshold (default: {SCENE_THRESHOLD})")
+    parser.add_argument("--force-screen", action="store_true",
+                        help="Skip the camera/screen classifier and always "
+                             "extract frames. Use when the classifier "
+                             "mis-identifies a screen recording as camera "
+                             "(e.g. mixed DV streams with picture-in-picture).")
     args = parser.parse_args()
 
     _update_threshold(args.threshold)
 
     if args.course:
         base_dir = Path(args.path) if args.path else COURSE_DATA_DIR
-        process_course(args.course, base_dir)
+        process_course(args.course, base_dir, force_screen=args.force_screen)
     else:
         video_path = Path(args.video)
         if not video_path.exists():
@@ -1092,7 +1105,8 @@ def main() -> None:
         else:
             course_dir = video_path.parent.parent
 
-        extract_and_align(video_path, caption_path, course_dir)
+        extract_and_align(video_path, caption_path, course_dir,
+                          skip_classify=args.force_screen)
 
 
 def _update_threshold(val: float) -> None:

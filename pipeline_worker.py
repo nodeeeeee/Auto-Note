@@ -173,7 +173,8 @@ def align_one(video: dict, force: bool) -> bool:
     return _run(cmd, f"Align: {video['stem']}")
 
 
-def pipeline_sequential(videos: list[dict], force: bool) -> None:
+def pipeline_sequential(videos: list[dict], force: bool,
+                        skip_frames: bool = False) -> None:
     """Simple sequential pipeline: transcribe → frames → align per video."""
     for i, video in enumerate(videos, 1):
         print(f"\n{'═' * 60}")
@@ -181,7 +182,8 @@ def pipeline_sequential(videos: list[dict], force: bool) -> None:
         print(f"{'═' * 60}", flush=True)
 
         transcribe_one(video, force)
-        extract_frames_one(video)
+        if not skip_frames:
+            extract_frames_one(video)
 
     # Alignment is best done course-level (batch BGE-M3 matching)
     if videos:
@@ -193,7 +195,8 @@ def pipeline_sequential(videos: list[dict], force: bool) -> None:
         _run(cmd, "Align all transcripts")
 
 
-def pipeline_threaded(videos: list[dict], force: bool) -> None:
+def pipeline_threaded(videos: list[dict], force: bool,
+                      skip_frames: bool = False) -> None:
     """Threaded pipeline: transcribe and frame-extract/align overlap.
 
     Thread 1 (transcriber): transcribes videos one at a time, pushes
@@ -223,6 +226,8 @@ def pipeline_threaded(videos: list[dict], force: bool) -> None:
             video = queue.get()
             if video is None:
                 break
+            if skip_frames:
+                continue  # frames disabled — drain the queue only
             print(f"\n  Processing frames: {video['stem']}", flush=True)
             extract_frames_one(video)
 
@@ -258,6 +263,11 @@ def main() -> None:
                         help="Re-process even if output files exist")
     parser.add_argument("--sequential", action="store_true",
                         help="Disable threading (debug mode)")
+    parser.add_argument("--skip-frames", action="store_true",
+                        help="Skip frame extraction + per-frame vision "
+                             "description. Use this when you plan to generate "
+                             "notes with --image-source slides — the frames "
+                             "and their descriptions are never read.")
     args = parser.parse_args()
 
     base_dir = Path(args.path) if args.path else COURSE_DATA_DIR
@@ -271,9 +281,9 @@ def main() -> None:
     print(f"Found {len(videos)} video(s) for course {args.course}.")
 
     if args.sequential:
-        pipeline_sequential(videos, args.force)
+        pipeline_sequential(videos, args.force, skip_frames=args.skip_frames)
     else:
-        pipeline_threaded(videos, args.force)
+        pipeline_threaded(videos, args.force, skip_frames=args.skip_frames)
 
     print(f"\n✓ Pipeline complete: {len(videos)} video(s) processed.")
 

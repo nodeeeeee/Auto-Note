@@ -269,6 +269,13 @@ def get_course_by_id(canvas: Canvas, course_id: int):
 # per-institution and sometimes per-course.
 _PANOPTO_TAB_TOOL_ID_FALLBACK = 128
 
+# Stream-tag preference order. Can be overridden at runtime via
+# AUTONOTE_PREFER_STREAM or the --prefer-stream CLI flag. Default keeps the
+# existing screen-share-first behaviour, which is right for most lectures.
+_PREFER_STREAM_ORDER: tuple[str, ...] = tuple(
+    os.environ.get("AUTONOTE_PREFER_STREAM", "SS,OBJECT,DV").split(",")
+)
+
 # Per-course cache for resolved Panopto tool IDs.
 _PANOPTO_TOOL_ID_CACHE: dict[int, int] = {}
 
@@ -781,15 +788,37 @@ def _download_authenticated(
         progress_cb(100)
 
 
+def _get_stream_candidates(
+    session_id: str,
+    cookies: list[dict],
+    bearer_token: str | None = None,
+    course_id:    int | None = None,
+) -> list[tuple[str, dict, str]]:
+    """Return all HLS stream candidates for a Panopto session in preference
+    order. Each item is (stream_url, auth_headers, stream_tag). Empty list on
+    failure. download_video() probes each candidate for audio and uses the
+    first one that has it."""
+    singles = _get_stream_url(
+        session_id, cookies,
+        bearer_token=bearer_token, course_id=course_id,
+        _return_all=True,
+    )
+    return singles or []
+
+
 def _get_stream_url(
     session_id: str,
     cookies: list[dict],
     bearer_token: str | None = None,
     course_id:    int | None = None,
-) -> tuple[str, dict] | None:
+    _return_all: bool = False,
+) -> tuple[str, dict] | list[tuple[str, dict, str]] | None:
     """Get the HLS stream URL for a Panopto session.
 
     Returns (stream_url, auth_headers, stream_tag) on success, None on failure.
+    If _return_all=True, returns a list of all candidate tuples in preference
+    order so callers can fall back (audio-less stream → try next).
+
     auth_headers is always {} (HLS streams are CDN-public once the URL is known).
     stream_tag is the Panopto stream tag ("SS" for screen share, "DV" for camera, etc.).
 
@@ -797,17 +826,31 @@ def _get_stream_url(
       1. DeliveryInfo.aspx POST with Bearer token → HLS master.m3u8
       2. Playwright LTI re-launch → navigate to Viewer.aspx → intercept DeliveryInfo
     """
-    def _extract_stream(body: dict) -> tuple[str, str] | None:
+    def _extract_streams(body: dict) -> list[tuple[str, str]]:
+        """Return a list of (stream_url, tag) candidates in preference order.
+        Caller can try each until one produces a video with an audio track —
+        some Panopto recordings store audio only in the DV stream while SS /
+        OBJECT are video-only for screen recordings."""
         streams = (body.get("Delivery") or {}).get("Streams") or []
-        # Prefer screen content (SS > OBJECT) over camera (DV).
-        # OBJECT streams contain the lecturer's screen recording (slides),
-        # which is more valuable for note generation than the camera view.
-        for tag in ("SS", "OBJECT", "DV", None):
+        # Preference: SS (screen-share) > OBJECT (screen recording) > DV (camera).
+        # We still yield *all* streams so the caller can fall back if the
+        # preferred one lacks audio.
+        order = _PREFER_STREAM_ORDER
+        out: list[tuple[str, str]] = []
+        seen_urls: set[str] = set()
+        for tag in order + (None,):
             for s in streams:
                 surl = s.get("StreamUrl", "")
-                if surl and (tag is None or s.get("Tag") == tag):
-                    return surl, s.get("Tag", "unknown")
-        return None
+                if not surl or surl in seen_urls:
+                    continue
+                if tag is None or s.get("Tag") == tag:
+                    seen_urls.add(surl)
+                    out.append((surl, s.get("Tag", "unknown")))
+        return out
+
+    def _extract_stream(body: dict) -> tuple[str, str] | None:
+        streams = _extract_streams(body)
+        return streams[0] if streams else None
 
     sess = requests.Session()
     for ck in cookies:
@@ -835,6 +878,10 @@ def _get_stream_url(
         if r.status_code == 200:
             body = r.json()
             if not body.get("ErrorCode"):
+                if _return_all:
+                    all_streams = _extract_streams(body)
+                    if all_streams:
+                        return [(u, {}, t) for (u, t) in all_streams]
                 result = _extract_stream(body)
                 if result:
                     surl, stag = result
@@ -874,10 +921,14 @@ def _get_stream_url(
             if "DeliveryInfo.aspx" in resp.url and not captured:
                 try:
                     body = resp.json()
-                    result = _extract_stream(body)
-                    if result:
-                        surl, stag = result
-                        captured.append((surl, {}, stag))
+                    if _return_all:
+                        for surl, stag in _extract_streams(body):
+                            captured.append((surl, {}, stag))
+                    else:
+                        result = _extract_stream(body)
+                        if result:
+                            surl, stag = result
+                            captured.append((surl, {}, stag))
                 except Exception:
                     pass
 
@@ -892,6 +943,8 @@ def _get_stream_url(
         finally:
             browser.close()
 
+    if _return_all:
+        return list(captured) if captured else []
     return captured[0] if captured else None
 
 
@@ -939,6 +992,34 @@ def _resolve_ffmpeg() -> str | None:
         return None
 
     return _try_imageio()
+
+
+def _hls_has_audio(stream_url: str, ff_bin: str | None = None) -> bool:
+    """Return True when an HLS master playlist references an audio track.
+    Called before download so we can skip audio-less variants (some Panopto
+    recordings only pack audio in the DV stream, not OBJECT/SS)."""
+    if ff_bin is None:
+        ff_bin = _resolve_ffmpeg()
+    if not ff_bin:
+        return True  # can't check — assume yes and let caller try
+    ffprobe = ff_bin.replace("/ffmpeg", "/ffprobe")
+    if not Path(ffprobe).exists():
+        # imageio-ffmpeg bundles only ffmpeg; probe via ffmpeg -i
+        probe = subprocess.run(
+            [ff_bin, "-hide_banner", "-i", stream_url],
+            capture_output=True, text=True, timeout=30,
+        )
+        return "Audio:" in (probe.stderr or "")
+    try:
+        r = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_name",
+             "-of", "default=nw=1:nk=1", stream_url],
+            capture_output=True, text=True, timeout=30,
+        )
+        return bool((r.stdout or "").strip())
+    except Exception:
+        return True  # don't block download on probe failure
 
 
 def _run_ffmpeg_hls(stream_url: str, out_path: Path, progress_cb) -> None:
@@ -1066,16 +1147,46 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
             manifest[key] = {"status": "error", "title": title}
             return False
 
-    result = _get_stream_url(
+    candidates = _get_stream_candidates(
         session_id, cookies,
         bearer_token=bearer_token,
         course_id=course_id if viewer_url else None,
     )
-    if not result:
+    if not candidates:
         tqdm.write(f"  [error] Could not get stream URL")
         manifest[key] = {"status": "error", "title": title}
         return False
-    stream_url, dl_headers, stream_tag = result
+
+    # Record which tags existed so the frame extractor can tell a true camera
+    # recording from a DV-with-audio fallback whose OBJECT/SS screen stream
+    # was only rejected for lacking an audio track.
+    available_tags = [ct for (_, _, ct) in candidates]
+    has_screen_stream = any(t in ("SS", "OBJECT") for t in available_tags)
+
+    # Probe each candidate for an audio track. Panopto screen-recording
+    # streams (SS/OBJECT) sometimes pack audio only in the DV variant, so
+    # we fall back through all available streams rather than trusting the
+    # first by tag.
+    stream_url = dl_headers = stream_tag = None
+    tried = []
+    for (cu, ch, ct) in candidates:
+        tried.append(ct)
+        # Only HLS master playlists are audio-probable from here. Direct
+        # authenticated URLs (non-m3u8) go straight through.
+        if "master.m3u8" not in cu or _hls_has_audio(cu):
+            stream_url, dl_headers, stream_tag = cu, ch, ct
+            break
+        tqdm.write(f"  Stream '{ct}' has no audio — trying next candidate")
+    if stream_url is None:
+        tqdm.write(
+            f"  [error] No stream with audio found for {title} "
+            f"(tried: {', '.join(tried)}) — skipping; the recording itself "
+            f"appears to be video-only.")
+        manifest[key] = {
+            "status": "error", "title": title,
+            "error": "no-audio-track",
+        }
+        raise RuntimeError(f"No audio track in any Panopto stream for '{title}'")
     tqdm.write(f"  Stream type: {stream_tag}")
 
     bar = tqdm(total=100, desc=f"  {title[:50]}", unit="%",
@@ -1107,6 +1218,8 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
             "status": "done", "path": str(out_path),
             "title": title, "session_id": session_id,
             "stream_tag": stream_tag,
+            "has_screen_stream": has_screen_stream,
+            "available_tags": available_tags,
         }
         return True
     except Exception as e:
@@ -1588,7 +1701,12 @@ def main() -> None:
 
         for i, video in enumerate(pending):
             print(f"\n[{i+1}/{len(pending)}] {video['title']}")
-            result = download_video(video, manifest, base_dir)
+            try:
+                result = download_video(video, manifest, base_dir)
+            except RuntimeError as _exc:
+                tqdm.write(f"  [skip] {_exc}")
+                _save_json(MANIFEST_FILE, manifest)
+                continue
             _save_json(MANIFEST_FILE, manifest)
             if args.transcribe and result is True:
                 _spawn_transcribe(manifest[str(video["item_id"])]["path"])
