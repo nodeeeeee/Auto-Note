@@ -538,6 +538,31 @@ def _translate(text: str, lang: str) -> str:
     return _call(TRANSLATE_MODEL, system, prompt, len(text) * 3)
 
 
+_MODEL_MAX_COMPLETION = {
+    # Conservative per-model output-token caps for OpenAI models. The API
+    # rejects requests where max_tokens exceeds these, so we clamp here.
+    "gpt-4o":          16384,
+    "gpt-4o-2024-08-06": 16384,
+    "gpt-4o-2024-11-20": 16384,
+    "gpt-4o-mini":     16384,
+    "gpt-4.1":         32768,
+    "gpt-4.1-mini":    32768,
+    "gpt-4.1-nano":    32768,
+    "gpt-5.1":         128000,
+    "gpt-5.2":         128000,
+    "o3":              100000,
+    "o4-mini":         100000,
+}
+
+
+def _cap_tokens(model: str, max_tokens: int) -> int:
+    """Clamp max_tokens to the model's max completion-token limit."""
+    cap = _MODEL_MAX_COMPLETION.get(model)
+    if cap and max_tokens > cap:
+        return cap
+    return max_tokens
+
+
 def _call(model: str, system: str, user: str, max_tokens: int,
           _truncated: list | None = None) -> str:
     """Call any supported LLM (OpenAI, Gemini, Anthropic, or Claude CLI).
@@ -545,6 +570,7 @@ def _call(model: str, system: str, user: str, max_tokens: int,
     If *_truncated* is a list, appends True/False to indicate whether the
     response was cut short by the token limit.
     """
+    max_tokens = _cap_tokens(model, max_tokens)
     # ── Claude CLI mode: call `claude -p` as subprocess ──────────────────
     if _provider(model) == "claude-cli":
         import subprocess as _sp
