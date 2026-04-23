@@ -407,11 +407,63 @@ def load_slides(path: Path,
 
 # ── Embedding & FAISS index ───────────────────────────────────────────────────
 
+class _RemoteEmbedder:
+    """Drop-in replacement for SentenceTransformer backed by a remote API.
+
+    Implements only the subset of the SentenceTransformer interface used by
+    embed_texts()/align_multi_slides()/_content_match_slide_group(), so the
+    rest of the pipeline keeps working when the local ML environment is not
+    installed.
+    """
+
+    def __init__(self, backend: str):
+        self.backend = backend   # "google" or "jina"
+
+    def encode(self, texts, batch_size=64, show_progress_bar=False,
+               normalize_embeddings=True, convert_to_numpy=True):
+        if isinstance(texts, str):
+            texts = [texts]
+        # Replace empty strings with a single space — Google's API rejects them.
+        texts = [t if t and t.strip() else " " for t in texts]
+        if self.backend == "google":
+            vecs = embed_texts_google(texts, desc="  [embed:google]",
+                                      task_type="RETRIEVAL_DOCUMENT")
+        else:
+            vecs = embed_texts_jina(texts, desc="  [embed:jina]")
+        if vecs is None:
+            raise RuntimeError(f"Remote embedder '{self.backend}' failed — "
+                               f"check API key and network connectivity.")
+        return vecs  # already L2-normalised, float32
+
+
+def _remote_embedder_if_available():
+    """Return a _RemoteEmbedder when an API key is configured, else None."""
+    if _get_google_key():
+        print("  [embed] Using Google text-embedding-004 (remote)", flush=True)
+        return _RemoteEmbedder("google")
+    if _get_jina_key():
+        print("  [embed] Using Jina embeddings v4 (remote)", flush=True)
+        return _RemoteEmbedder("jina")
+    return None
+
+
 def get_embedder():
-    """Load sentence-transformer model once; use GPU if available."""
-    import warnings
-    from sentence_transformers import SentenceTransformer
-    import torch
+    """Load a sentence-transformer model; fall back to a remote API embedder
+    when the local ML environment is missing. Raises RuntimeError only when
+    neither local nor remote is available."""
+    try:
+        from sentence_transformers import SentenceTransformer
+        import torch
+    except ImportError:
+        remote = _remote_embedder_if_available()
+        if remote is not None:
+            return remote
+        raise RuntimeError(
+            "sentence_transformers is not installed and no remote embedding "
+            "API key (GEMINI_API_KEY / JINA_API_KEY) is configured. "
+            "Install the ML environment OR add a Gemini/Jina API key in "
+            "Settings to enable alignment.")
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"  [embed] Loading {EMBED_MODEL} on {device} ...", flush=True)
     try:
@@ -432,7 +484,10 @@ def get_embedder():
             _os.close(_saved_stdout)
             _os.close(_saved_stderr)
     except Exception as e:
-        print(f"  [embed] Failed to load model: {e}", flush=True)
+        print(f"  [embed] Local model load failed ({e}) — trying remote API", flush=True)
+        remote = _remote_embedder_if_available()
+        if remote is not None:
+            return remote
         raise
     print(f"  [embed] Model loaded.", flush=True)
     return model
@@ -1583,8 +1638,11 @@ def suggest_matches(
             print("  [match] Google API failed — falling back to heuristics")
             return {}
     else:
-        # Local model: bge-m3 or mpnet
+        # Local model: bge-m3 or mpnet. Fall back to a remote API when the
+        # local ML environment is not installed so video↔slide matching still
+        # works on an API-only install.
         model_name = MATCH_MODELS.get(model, MATCH_MODELS["bge-m3"])
+        embs = None
         try:
             from sentence_transformers import SentenceTransformer
             import torch
@@ -1613,15 +1671,42 @@ def suggest_matches(
                 show_progress_bar=False,
                 convert_to_numpy=True,
             ).astype(np.float32)
-            cap_embs = embs[:len(cap_texts)]
-            slide_embs = embs[len(cap_texts):]
             print(f"  [match] Embedded {len(cap_texts)} + {len(slide_texts)} texts")
+        except ImportError as e:
+            print(f"  [match] Local sentence_transformers not available ({e})")
+            # Fall through to remote fallback below.
         except Exception as e:
             import traceback
             print(f"  [match] Model load failed: {e}")
             traceback.print_exc()
-            print("  [match] Falling back to heuristics")
-            return {}
+            # Still try a remote fallback before giving up.
+
+        if embs is None:
+            # Pick the first configured remote provider.
+            if _get_google_key():
+                print("  [match] Falling back to Google text-embedding-004")
+                cap_embs = embed_texts_google(cap_texts, desc="  [match] captions",
+                                              task_type="RETRIEVAL_QUERY")
+                slide_embs = embed_texts_google(slide_texts, desc="  [match] slides",
+                                                task_type="RETRIEVAL_DOCUMENT")
+                if cap_embs is None or slide_embs is None:
+                    print("  [match] Google fallback failed — heuristics only")
+                    return {}
+            elif _get_jina_key():
+                print("  [match] Falling back to Jina embeddings v4")
+                cap_embs = embed_texts_jina(cap_texts, desc="  [match] captions")
+                slide_embs = embed_texts_jina(slide_texts, desc="  [match] slides")
+                if cap_embs is None or slide_embs is None:
+                    print("  [match] Jina fallback failed — heuristics only")
+                    return {}
+            else:
+                print("  [match] No remote embedding key configured — "
+                      "set GEMINI_API_KEY or JINA_API_KEY in Settings to "
+                      "enable video↔slide matching without the local ML env.")
+                return {}
+        else:
+            cap_embs = embs[:len(cap_texts)]
+            slide_embs = embs[len(cap_texts):]
 
     # ── Cosine similarity → best match per caption ───────────────────────────
     sims = cap_embs @ slide_embs.T  # (n_caps, n_slides)
@@ -1818,12 +1903,19 @@ def process_course(course_id: int | str, use_jina: bool = False,
             if not slide_group:
                 # ── Priority 4: mpnet content embedding fallback ─────────────
                 if embedder is None:
-                    embedder = get_embedder()
-                slide_group = _content_match_slide_group(
-                    cap, slides_by_num, all_slides, embedder
-                )
+                    try:
+                        embedder = get_embedder()
+                    except Exception as e:
+                        print(f"  [warn] Embedder unavailable ({e}); "
+                              f"skipping content-match for {cap.name}")
+                        embedder = False   # sentinel: do not retry
+                if embedder and embedder is not False:
+                    slide_group = _content_match_slide_group(
+                        cap, slides_by_num, all_slides, embedder
+                    )
             if not slide_group:
-                print(f"  [warn] No matching slides for {cap.name} — skipping")
+                print(f"  [warn] No matching slides for {cap.name} — "
+                      f"note generation will use transcript only")
                 continue
 
         # Check if all output files for this group already exist
@@ -1847,7 +1939,14 @@ def process_course(course_id: int | str, use_jina: bool = False,
             print("  [jina] Falling back to text-based alignment")
 
         if embedder is None:
-            embedder = get_embedder()
+            try:
+                embedder = get_embedder()
+            except Exception as e:
+                print(f"  [warn] Embedder unavailable ({e}); "
+                      f"skipping alignment for {cap.name}")
+                embedder = False
+        if not embedder or embedder is False:
+            continue
         align_multi_slides(cap, slide_group, out_dir, embedder=embedder)
 
 

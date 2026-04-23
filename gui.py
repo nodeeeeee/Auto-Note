@@ -993,7 +993,9 @@ def build_pipeline(page: ft.Page, console: OutputConsole) -> ft.Column:
     )
     lec_filter_f = _text_field("Lecture filter", hint="1-5  or  1,3,5  (blank=all)")
     force_sw     = ft.Switch(label="Force regenerate", value=False, active_color=C_PRIMARY)
-    per_video_sw = ft.Switch(label="Per-video notes", value=False, active_color=C_PRIMARY)
+    # Per-video notes are the default (one note per video, named after the
+    # video). Toggle off to merge everything into one course-wide file.
+    per_video_sw = ft.Switch(label="Per-video notes", value=True, active_color=C_PRIMARY)
 
     def _run(_):
         cid  = int(course_val["v"])
@@ -1045,8 +1047,9 @@ def build_pipeline(page: ft.Page, console: OutputConsole) -> ft.Column:
                 c += ["--lectures", lec_filter_f.value.strip()]
             if force_sw.value:
                 c.append("--force")
-            if per_video_sw.value:
-                c.append("--per-video")
+            if not per_video_sw.value:
+                # Per-video is the default; opt in to the merged layout.
+                c.append("--merged")
             cmds.append(("Generate notes", c))
 
         def _chain(idx: int = 0) -> None:
@@ -1668,6 +1671,9 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
                             value=False, active_color=C_PRIMARY)
     iterate_sw = ft.Switch(label="Iterative mode (raise detail until quality target)",
                             value=False, active_color=C_PRIMARY)
+    # Per-video output is the default; toggle off to get a single combined file.
+    per_video_sw = ft.Switch(label="Per-video notes (one file per video)",
+                              value=True, active_color=C_PRIMARY)
 
     note_model   = _read_constant("generate", "NOTE_MODEL")
     verify_model = _read_constant("generate", "VERIFY_MODEL")
@@ -1688,6 +1694,8 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
             cmd.append("--merge-only")
         if iterate_sw.value:
             cmd.append("--iterate")
+        if not per_video_sw.value:
+            cmd.append("--merged")
         console.run(cmd)
 
     detail_styles = [
@@ -1734,6 +1742,7 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
                 ft.Divider(height=10,
                            color=ft.Colors.with_opacity(0.08, ft.Colors.WHITE)),
                 _label("Options"),
+                per_video_sw,
                 force_sw,
                 merge_sw,
                 iterate_sw,

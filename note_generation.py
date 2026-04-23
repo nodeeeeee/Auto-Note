@@ -64,7 +64,7 @@ COURSE_DATA_DIR = Path(_out_dir) if _out_dir else Path.home() / "AutoNote"
 DETAIL_LEVEL      = 7
 OUTPUT_FORMAT     = "md"
 NOTE_MODEL        = "gpt-5.1"
-VERIFY_MODEL      = "gpt-4.1-mini"
+VERIFY_MODEL      = "gpt-4o"
 VERIFY_NOTES      = True
 QUALITY_TARGET    = 8.0
 IMAGE_RENDER_SCALE = 1.5
@@ -1206,17 +1206,20 @@ class LectureData:
     def load(self, out_dir: Path) -> None:
         if self.source == "screenshare" and self.frame_dir:
             self._load_from_frames(out_dir)
+        elif self.source == "transcript_only":
+            self._load_from_transcript(out_dir)
         else:
             self.slides = _load_slides(self.slide_path)
-        if self.alignment_path and self.alignment_path.exists():
+        if self.alignment_path and self.alignment_path.exists() \
+                and self.source != "transcript_only":
             self.compact = alignment_parser.parse(self.alignment_path)
             self.compact_slides = self.compact.get("slides", [])
-        if self.source != "screenshare":
+        if self.source == "slides":
             cache_f = self.slide_path.parent / f"{self.slide_path.name}.image_cache.json"
             if cache_f.exists():
                 with open(cache_f) as f:
                     self.img_cache = json.load(f)
-        else:
+        elif self.source == "screenshare":
             # For screenshare: load the frame description cache created by
             # frame_extractor._describe_frames()
             cache_f = self.frame_dir / "image_cache.json"
@@ -1239,8 +1242,60 @@ class LectureData:
             # Pre-populate img_map since frames are already extracted
             self.img_map[i] = png
 
+    def _load_from_transcript(self, out_dir: Path) -> None:
+        """Build pseudo-slides from a caption when no slide file or screenshare
+        frames are available. Each pseudo-slide covers ~CHUNK_SEC of audio, so
+        the per-chunk LLM call receives a coherent transcript segment."""
+        CHUNK_SEC = 180.0   # ~3 minutes per pseudo-slide
+        try:
+            with open(self.slide_path, encoding="utf-8") as f:
+                cap = json.load(f)
+        except Exception:
+            self.slides = [SlideInfo(0, "Lecture", "")]
+            return
+        segs = cap.get("segments", [])
+        if not segs:
+            self.slides = [SlideInfo(0, "Lecture", "")]
+            return
+
+        # Chunk segments into pseudo-slides by time.
+        chunks: list[list[dict]] = []
+        cur: list[dict] = []
+        cur_start = segs[0].get("start", 0.0)
+        for s in segs:
+            if s.get("start", 0.0) - cur_start >= CHUNK_SEC and cur:
+                chunks.append(cur)
+                cur = []
+                cur_start = s.get("start", 0.0)
+            cur.append(s)
+        if cur:
+            chunks.append(cur)
+
+        self.slides = []
+        compact_slides: list[dict] = []
+        for i, chunk in enumerate(chunks):
+            text = " ".join(s.get("text", "").strip() for s in chunk).strip()
+            label = f"Segment {i + 1}"
+            self.slides.append(SlideInfo(i, label, text))
+            compact_slides.append({
+                "slide":      i + 1,
+                "start":      chunk[0].get("start", 0.0),
+                "end":        chunk[-1].get("end", 0.0),
+                "transcript": text,
+            })
+        self.compact_slides = compact_slides
+        self.compact = {
+            "lecture":      self.slide_path.stem,
+            "slides":       compact_slides,
+            "duration":     cap.get("duration", 0.0),
+            "source":       "transcript_only",
+        }
+
     def render_chunk_images(self, slide_indices: list[int]) -> dict[int, Path]:
         """Render only the slides in this chunk into images/L{num}[_F{idx}]/, cache results."""
+        if self.source == "transcript_only":
+            # No slide file and no frames to render.
+            return {}
         if self.source == "screenshare":
             # For screen share, frames are already extracted — copy them
             # into the notes images/ directory using frame_NNN naming
@@ -1286,6 +1341,9 @@ class LectureData:
             return t.strip()
         if self.source == "screenshare" and self.frame_dir:
             stem = self.frame_dir.name
+            return stem.replace("-", " ").replace("_", " ")
+        if self.source == "transcript_only":
+            stem = self.slide_path.stem
             return stem.replace("-", " ").replace("_", " ")
         # Fall back to filename stem, removing "L02-" prefix
         stem = re.sub(r"^[Ll]\d+[-_\s]+", "", self.slide_path.stem)
@@ -1508,7 +1566,12 @@ def generate_per_video_notes(
         bar.close()
 
         # Source metadata
-        slide_file = ld.slide_path.name if ld.source != "screenshare" else "(screen recording frames)"
+        if ld.source == "screenshare":
+            slide_file = "(screen recording frames)"
+        elif ld.source == "transcript_only":
+            slide_file = "(transcript only — no slides matched)"
+        else:
+            slide_file = ld.slide_path.name
         source_info = f"- **Video**: {video_name}\n- **Slides**: {slide_file}\n\n---\n\n"
 
         from datetime import datetime
@@ -1664,6 +1727,100 @@ def _discover_screenshare_lectures(course_dir: Path) -> list[LectureData]:
             source="screenshare",
             frame_dir=fdir,
         ))
+    return lectures
+
+
+def _discover_video_lectures(course_dir: Path) -> list[LectureData]:
+    """Video-centric discovery: iterate captions and pair each with its
+    matching slides/frames.
+
+    This is the default discovery mode because each downloaded video should
+    produce one note — even when no slide file matches (the note is then
+    generated from the transcript alone). The returned LectureData list
+    preserves caption order, and `num` is assigned sequentially.
+    """
+    captions_dir = course_dir / "captions"
+    align_dir    = course_dir / "alignment"
+    frames_dir   = course_dir / "frames"
+    mat_dir      = course_dir / "materials"
+
+    if not captions_dir.exists():
+        return []
+
+    captions = sorted(captions_dir.glob("*.json"))
+    if not captions:
+        return []
+
+    # Index alignment files by the caption stem they cover. Keys are caption
+    # stems; values are (source, alignment_path) so we can prefer screenshare
+    # over slide alignments for the same caption (per user memory: frames
+    # score higher than PDF slides).
+    alignment_by_caption: dict[str, list[Path]] = {}
+    screenshare_by_caption: dict[str, Path]    = {}
+    if align_dir.exists():
+        for af in sorted(align_dir.glob("*.json")):
+            if af.name.endswith(".compact.json") or af.name.endswith("mapping.json"):
+                continue
+            try:
+                with open(af, encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except Exception:
+                continue
+            # "lecture" field holds the caption stem for both screenshare and
+            # slide alignments; fall back to af.stem for old screenshare files.
+            cap_stem = data.get("lecture", "") or af.stem
+            if data.get("source") == "screenshare":
+                # Pick any one screenshare alignment per caption; they are
+                # functionally equivalent.
+                screenshare_by_caption.setdefault(cap_stem, af)
+            elif cap_stem:
+                alignment_by_caption.setdefault(cap_stem, []).append(af)
+
+    lectures: list[LectureData] = []
+    for num, cap in enumerate(captions, start=1):
+        stem = cap.stem
+        # Preferred order per memory: frame extraction scores higher than PDF
+        # slide alignment, so screenshare wins when both exist.
+        if stem in screenshare_by_caption:
+            frame_dir = frames_dir / stem
+            if frame_dir.exists() and any(frame_dir.glob("frame_*.png")):
+                lectures.append(LectureData(
+                    num, frame_dir, screenshare_by_caption[stem],
+                    source="screenshare", frame_dir=frame_dir,
+                ))
+                continue
+            # Screenshare alignment exists but frames are gone — skip to
+            # slide-based path so we at least emit some output.
+
+        aligns = alignment_by_caption.get(stem, [])
+        if aligns:
+            # One note per video: if multiple slide files align to the same
+            # caption, keep them all as file_idx parts.
+            for fi, af in enumerate(aligns, start=1):
+                try:
+                    with open(af, encoding="utf-8") as fh:
+                        data = json.load(fh)
+                except Exception:
+                    data = {}
+                slide_file = data.get("slide_file", "")
+                slide_path = mat_dir / slide_file if slide_file else None
+                if slide_path and not slide_path.exists():
+                    cands = list(mat_dir.rglob(slide_file)) if slide_file else []
+                    slide_path = cands[0] if cands else None
+                if slide_path is None:
+                    # No slide on disk — fall through and treat as transcript-only
+                    continue
+                lectures.append(LectureData(num, slide_path, af, file_idx=fi))
+            # If we appended at least one slide-based entry, we're done.
+            if any(ld.num == num for ld in lectures):
+                continue
+
+        # No alignment + no screenshare frames: emit a transcript-only
+        # LectureData. The "slide_path" points to the caption so the note
+        # gets a stable identity; generate_section will use the slide_only
+        # prompt but with transcript content injected via compact alignment.
+        lectures.append(LectureData(num, cap, cap if cap.exists() else None,
+                                    source="transcript_only"))
     return lectures
 
 
@@ -1897,7 +2054,15 @@ def main() -> None:
     parser.add_argument("--lectures",    metavar="N-N or N,N,N", default="",
                         help="Filter lectures, e.g. '1-5' or '1,2,3'")
     parser.add_argument("--per-video",  action="store_true",
-                        help="Generate one note file per video/lecture instead of one combined note")
+                        help="[deprecated: per-video is now the default] "
+                             "Generate one note file per video/lecture.")
+    parser.add_argument("--merged",     action="store_true",
+                        help="Generate one combined course-wide note file "
+                             "instead of the default one-note-per-video layout.")
+    parser.add_argument("--slide-centric", action="store_true",
+                        help="[legacy] Iterate slide files first when building "
+                             "the lecture list; by default the pipeline is "
+                             "video-centric and iterates captions.")
     parser.add_argument("--language",   metavar="LANG", default=None,
                         choices=["en", "zh"],
                         help="Note language: en (English) or zh (Chinese). "
@@ -1923,7 +2088,16 @@ def main() -> None:
     if args.course:
         course_dir  = COURSE_DATA_DIR / args.course
         course_name = args.course_name or f"CS{args.course}"
-        lectures    = _discover_lectures(course_dir)
+        if args.slide_centric:
+            lectures = _discover_lectures(course_dir)
+        else:
+            lectures = _discover_video_lectures(course_dir)
+            if not lectures:
+                # No captions yet — fall back to slide-based discovery so users
+                # can still generate notes from raw slides without running
+                # the transcribe step.
+                print("  No captions found — falling back to slide-based discovery")
+                lectures = _discover_lectures(course_dir)
         if args.lectures:
             sel: set[int] = set()
             for part in args.lectures.split(","):
@@ -1958,8 +2132,9 @@ def main() -> None:
                 print(f"  Language changed ({cached_lang} → {NOTE_LANGUAGE}), "
                       f"force-regenerating sections.")
 
-        if args.per_video:
-            # Per-video mode: one note per lecture/video
+        # Per-video is the default; pass --merged to produce a single combined
+        # note file instead.
+        if not args.merged:
             out_dir = out_path.parent
             generate_per_video_notes(
                 course_name, lectures, out_dir,
