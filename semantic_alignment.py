@@ -1919,6 +1919,30 @@ def process_course(course_id: int | str, use_jina: bool = False,
                 # ── Priority 3: BGE-M3 embedding match ──────────────────────
                 slide_group = bge_matches[cap.stem]
                 print(f"  [bge-m3] {cap.name} → {[s.name for s in slide_group]}")
+
+            # Prefer the master lecture deck over per-day annotation
+            # snapshots. Profs often export per-session annotated PDFs
+            # (e.g. `Lecture5.ann070426.pdf` → only the 10 slides discussed
+            # that day) alongside the full `Lecture5.pdf`. bge-m3 matches
+            # the snapshot because its content overlaps most tightly with
+            # one day's transcript, but students want notes against the
+            # full scope. If the picked file has a `.annYYYYMMDD.pdf`
+            # style suffix and a sibling without that suffix exists, swap
+            # to the sibling.
+            if slide_group:
+                promoted: list[Path] = []
+                for sp in slide_group:
+                    m = re.match(r"^(.+)\.ann\d{4,8}$", sp.stem)
+                    if m:
+                        main_path = sp.with_name(f"{m.group(1)}{sp.suffix}")
+                        if main_path.exists() and main_path != sp:
+                            print(f"  [promote] {sp.name} → {main_path.name} "
+                                  f"(full deck preferred over per-day annotation)")
+                            promoted.append(main_path)
+                            continue
+                    promoted.append(sp)
+                slide_group = promoted
+
             if not slide_group:
                 # ── Priority 4: mpnet content embedding fallback ─────────────
                 if embedder is None:
