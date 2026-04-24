@@ -1895,7 +1895,26 @@ def process_course(course_id: int | str, use_jina: bool = False,
             print(f"  [mapping] {cap.name} → {[s.name for s in slide_group]}")
         else:
             # ── Priority 2: automatic name/number matching ───────────────────
-            slide_group = _find_best_slide_group(cap, slides_by_num, all_slides)
+            name_match = _find_best_slide_group(cap, slides_by_num, all_slides)
+            # When a caption name shares coarse tokens with many slide files
+            # (e.g. "EE4802_IE4213 on 07_04_2026" matches every slide whose
+            # name also starts with "EE4802_IE4213"), the token-overlap
+            # heuristic at >0.05 threshold can return a wrong but non-empty
+            # match that then shadows bge-m3's semantic pick. If a bge-m3
+            # match exists AND the name match is weak / didn't come from a
+            # numeric lecture-id extraction, trust bge-m3 instead.
+            if name_match and cap.stem in bge_matches:
+                num = _lec_num(cap)
+                name_is_number_based = (num is not None and num in slides_by_num)
+                if not name_is_number_based and bge_matches[cap.stem] != name_match:
+                    print(f"  [bge-m3] {cap.name} → {[s.name for s in bge_matches[cap.stem]]} "
+                          f"(overriding weak name match {[s.name for s in name_match]})")
+                    slide_group = bge_matches[cap.stem]
+                else:
+                    slide_group = name_match
+            else:
+                slide_group = name_match
+
             if not slide_group and cap.stem in bge_matches:
                 # ── Priority 3: BGE-M3 embedding match ──────────────────────
                 slide_group = bge_matches[cap.stem]
