@@ -593,6 +593,10 @@ def _call(model: str, system: str, user: str, max_tokens: int,
     # We run non-interactively, read-only sandbox, outside a git repo, and
     # capture only the agent's final message via `-o <file>` so we don't
     # have to parse the streaming event log on stdout.
+    # The caller's ~/.codex/config.toml default (e.g. gpt-5.2-codex) is
+    # often not available on a ChatGPT-plan login, so we override to a
+    # model that is — gpt-5.4 by default; set AUTONOTE_CODEX_MODEL to
+    # pick a different one (e.g. gpt-5.5, gpt-5.4-mini).
     if _provider(model) == "codex-cli":
         import subprocess as _sp
         import tempfile as _tf
@@ -601,8 +605,10 @@ def _call(model: str, system: str, user: str, max_tokens: int,
         _os2.close(out_fd)
         try:
             prompt_text = f"{system}\n\n{user}" if system else user
+            codex_model = _os2.environ.get("AUTONOTE_CODEX_MODEL", "gpt-5.4")
             cmd = [
                 "codex", "exec",
+                "-m", codex_model,
                 "--skip-git-repo-check",
                 "-s", "read-only",
                 "-o", out_file,
@@ -620,8 +626,12 @@ def _call(model: str, system: str, user: str, max_tokens: int,
                 _truncated.append(False)  # CLI handles its own limits
             if result.returncode != 0 and not content:
                 err = (result.stderr or result.stdout or "").strip()
+                # Surface the real failure at the *tail* of stderr (quota,
+                # auth, 400s from the provider). The head is usually just
+                # skill-loader warnings and the session preamble.
+                tail = err[-600:] if len(err) > 600 else err
                 raise RuntimeError(
-                    f"codex exec failed (code {result.returncode}): {err[:500]}"
+                    f"codex exec failed (code {result.returncode}): {tail}"
                 )
             return content
         finally:
