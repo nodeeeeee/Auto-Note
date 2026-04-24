@@ -105,9 +105,9 @@ Writing guidelines:
    - Pure text slides (bullet points, definitions, titles) do not need images — the notes express text better than a screenshot.
    - **Be INCLUSIVE with images**: if a frame/slide shows a diagram, chart, table, code, or any non-trivial visual content, include it. Aim to include most of the content-rich images available, not just a few highlights. It's better to have more images with brief connecting text than to skip images.
    - **Each image MUST be placed inline, immediately after the paragraph that directly discusses the concept shown in that image.** If a frame shows content that the transcript doesn't fully cover, briefly describe the frame's content (using the description provided in the image hints) and then insert the image.
-   - Format for slide images: `![Slide N](images/LXX/slide_NNN.png) *(one-sentence description)*`
-   - Format for screen-capture frames: `![Frame N](images/LXX/frame_NNN.png) *(one-sentence description)*`
-     (LXX is provided by the caller — do not modify it; the caption must be in parentheses wrapped in asterisks exactly as shown).
+   - Format for slide images: `![Slide N](images/L**…/slide_NNN.png) *(one-sentence description)*`
+   - Format for screen-capture frames: `![Frame N](images/L**…/frame_NNN.png) *(one-sentence description)*`
+     (The subdirectory under `images/` is provided in the "Available images" list — copy it verbatim, including any slug suffix, and do not shorten or rewrite it. The caption must be in parentheses wrapped in asterisks exactly as shown.)
 9. Never fabricate technical details not present in the source material.
 """,
 chunk="""\
@@ -238,10 +238,10 @@ def _desc_has_visual(desc: str) -> bool:
 
 
 def _img_ref_pattern() -> re.Pattern:
-    # Matches slide_001.png, frame_001.png, in images/L04/ or images/L04_F02/,
-    # with an optional trailing italic caption: *(description)*
+    # Matches slide_001.png / frame_001.png under images/L04/, images/L04_F02/,
+    # or images/L04_<slug>[_F02]/ — with an optional trailing italic caption.
     return re.compile(
-        r"!\[(?:Slide|Frame) \d+\]\((images/L\d{2}(?:_F\d{2})?/(?:slide|frame)_\d{3}\.png)\)"
+        r"!\[(?:Slide|Frame) \d+\]\((images/L\d{2}[^/]*/(?:slide|frame)_\d{3}\.png)\)"
         r"(?:\s*\*\([^)]*\)\*)?"
     )
 
@@ -335,18 +335,15 @@ def filter_images_pass(
     """
     pattern = _img_ref_pattern()
 
-    # Build unified lookup: image rel-path → (SlideInfo, LectureData)
-    # Mirrors the backward-compat naming used in render_chunk_images:
-    #   file_idx==1  → images/L04/slide_001.png
-    #   file_idx>=2  → images/L04_F02/slide_001.png
+    # Build unified lookup: image rel-path → (SlideInfo, LectureData).
+    # Path scheme matches render_chunk_images: images/{dir_key}/…, where
+    # dir_key = L{num:02d}_{slug}[_F{idx:02d}].
     slide_ld_lookup: dict[str, tuple[SlideInfo, "LectureData"]] = {}
     for ld in lectures:
-        prefix = (f"L{ld.num:02d}" if ld.file_idx == 1
-                  else f"L{ld.num:02d}_F{ld.file_idx:02d}")
         # Use frame_NNN for screenshare, slide_NNN for traditional
         img_prefix = "frame" if ld.source == "screenshare" else "slide"
         for s in ld.slides:
-            key = f"images/{prefix}/{img_prefix}_{s.index+1:03d}.png"
+            key = f"images/{ld.dir_key}/{img_prefix}_{s.index+1:03d}.png"
             slide_ld_lookup[key] = (s, ld)
 
     # Collect unique paths and decide keep/remove
@@ -966,10 +963,12 @@ def _build_chunk_prompt(
 
 # ── Section-by-section generation ────────────────────────────────────────────
 
-def _section_path(sections_dir: Path, lec_num: int, ci: int, file_idx: int = 1) -> Path:
-    if file_idx == 1:
-        return sections_dir / f"L{lec_num:02d}_S{ci:02d}.md"
-    return sections_dir / f"L{lec_num:02d}_F{file_idx:02d}_S{ci:02d}.md"
+def _section_path(sections_dir: Path, ld: "LectureData", ci: int) -> Path:
+    # Keyed by `dir_key` (L{num}_{slug}[_F{idx}]) so the cache survives
+    # caption-list reshuffles — a section generated for one lecture can
+    # never be served to a different lecture that happens to land on the
+    # same sequential `num` on a later run.
+    return sections_dir / f"{ld.dir_key}_S{ci:02d}.md"
 
 
 def generate_section(
@@ -987,7 +986,7 @@ def generate_section(
     force: bool = False,
 ) -> str:
     """Generate (or load from cache) one section and save it to sections_dir."""
-    sec_file = _section_path(sections_dir, lec_num, ci, ld.file_idx)
+    sec_file = _section_path(sections_dir, ld, ci)
 
     if not force and sec_file.exists() and sec_file.stat().st_size > 500:
         if bar:
@@ -1275,6 +1274,32 @@ class LectureData:
         self.img_cache:      dict            = {}
         self.img_map:        dict[int, Path] = {}
 
+    @property
+    def slug(self) -> str:
+        # Stable, filesystem-safe identifier derived from the lecture's
+        # source. Used to disambiguate per-lecture image directories and
+        # section cache files so different lectures never share paths —
+        # previously `num` (a sequential index over the captions list)
+        # shifted when videos were added, causing e.g. 4_17's frames to
+        # overwrite 4_10's inside images/L11/ and leaving stale captions
+        # pointing at the wrong images.
+        if self.source == "screenshare" and self.frame_dir is not None:
+            base = self.frame_dir.name
+        else:
+            base = self.slide_path.stem
+        safe = re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_")[:48]
+        return safe or "lec"
+
+    @property
+    def dir_key(self) -> str:
+        # The per-lecture path component for both images/ and the section
+        # cache: `L{num:02d}_{slug}` (plus `_F{file_idx:02d}` when a single
+        # lecture has more than one slide file).
+        base = f"L{self.num:02d}_{self.slug}"
+        if self.file_idx > 1:
+            base = f"{base}_F{self.file_idx:02d}"
+        return base
+
     def load(self, out_dir: Path) -> None:
         if self.source == "screenshare" and self.frame_dir:
             self._load_from_frames(out_dir)
@@ -1364,17 +1389,17 @@ class LectureData:
         }
 
     def render_chunk_images(self, slide_indices: list[int]) -> dict[int, Path]:
-        """Render only the slides in this chunk into images/L{num}[_F{idx}]/, cache results."""
+        """Render only the slides in this chunk into images/{dir_key}/, cache results."""
         if self.source == "transcript_only":
             # No slide file and no frames to render.
             return {}
         if self.source == "screenshare":
             # For screen share, frames are already extracted — copy them
-            # into the notes images/ directory using frame_NNN naming
-            if self.file_idx == 1:
-                img_dir = self._out_dir / "images" / f"L{self.num:02d}"
-            else:
-                img_dir = self._out_dir / "images" / f"L{self.num:02d}_F{self.file_idx:02d}"
+            # into the notes images/ directory using frame_NNN naming.
+            # `dir_key` embeds the lecture slug so unrelated lectures
+            # that happen to share the same `num` don't clobber each
+            # other's frames under a common images/L{num}/ path.
+            img_dir = self._out_dir / "images" / self.dir_key
             img_dir.mkdir(parents=True, exist_ok=True)
             import shutil
             for i in slide_indices:
@@ -1391,10 +1416,7 @@ class LectureData:
                     self.img_map[i] = dst
             return {i: self.img_map[i] for i in slide_indices if i in self.img_map}
 
-        if self.file_idx == 1:
-            img_dir = self._out_dir / "images" / f"L{self.num:02d}"
-        else:
-            img_dir = self._out_dir / "images" / f"L{self.num:02d}_F{self.file_idx:02d}"
+        img_dir = self._out_dir / "images" / self.dir_key
         needed = [i for i in slide_indices if i not in self.img_map]
         if needed:
             new = render_slide_images(self.slide_path, img_dir, needed)
@@ -1456,7 +1478,7 @@ def merge_sections(
             n_chunks   = max(1, (len(ld.slides) + CHAPTER_SIZE - 1) // CHAPTER_SIZE)
             file_parts: list[str] = []
             for ci in range(1, n_chunks + 1):
-                sec_file = _section_path(sections_dir, ld.num, ci, ld.file_idx)
+                sec_file = _section_path(sections_dir, ld, ci)
                 if sec_file.exists() and sec_file.stat().st_size > 500:
                     file_parts.append(sec_file.read_text(encoding="utf-8"))
                 else:
