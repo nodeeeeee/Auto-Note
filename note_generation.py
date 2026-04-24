@@ -1054,14 +1054,20 @@ def generate_section(
         v_user = _P("verify").format(term_list=term_list, draft=draft[:2500])
         # Always route the verify/revision pass through VERIFY_MODEL
         # (gpt-4o) — cheap and fast, avoids burning codex quota on a
-        # short review call. Caller must have an OpenAI key configured.
+        # short review call. If OpenAI is unavailable (no key, quota
+        # exceeded, network issue), skip verification rather than losing
+        # the generated draft.
         _vmodel = VERIFY_MODEL
-        v_result = _call(_vmodel, "", v_user, 1500)
-        if not v_result.strip().upper().startswith("APPROVED"):
-            if len(v_result) > len(draft) * 0.3:
-                draft = v_result
-            else:
-                tqdm.write(f"  [warn] Verifier suspicious response, keeping draft")
+        try:
+            v_result = _call(_vmodel, "", v_user, 1500)
+            if not v_result.strip().upper().startswith("APPROVED"):
+                if len(v_result) > len(draft) * 0.3:
+                    draft = v_result
+                else:
+                    tqdm.write(f"  [warn] Verifier suspicious response, keeping draft")
+        except Exception as _ve:
+            tqdm.write(f"  [warn] Verify pass failed ({type(_ve).__name__}: "
+                       f"{str(_ve)[:120]}) — keeping draft")
 
     # Strip pipeline artifacts that may have leaked into the draft
     draft = _clean_artifacts(draft)
@@ -1071,8 +1077,13 @@ def generate_section(
         lang = _LANG_NAMES.get(NOTE_LANGUAGE, NOTE_LANGUAGE)
         tqdm.write(f"     translating to {lang}…")
         _tt = _time.monotonic()
-        draft = _translate(draft, lang)
-        tqdm.write(f"     ✓ translated ({_time.monotonic()-_tt:.0f}s)")
+        try:
+            draft = _translate(draft, lang)
+            tqdm.write(f"     ✓ translated ({_time.monotonic()-_tt:.0f}s)")
+        except Exception as _te:
+            tqdm.write(f"     [warn] Translation failed "
+                       f"({type(_te).__name__}: {str(_te)[:120]}) — "
+                       f"keeping draft in source language")
 
     heading = f"### {lec_num}.{ci} {chunk_title}"
     content = f"{heading}\n\n{draft}"
