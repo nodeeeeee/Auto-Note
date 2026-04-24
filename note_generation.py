@@ -594,9 +594,10 @@ def _call(model: str, system: str, user: str, max_tokens: int,
     # capture only the agent's final message via `-o <file>` so we don't
     # have to parse the streaming event log on stdout.
     # The caller's ~/.codex/config.toml default (e.g. gpt-5.2-codex) is
-    # often not available on a ChatGPT-plan login, so we override to a
-    # model that is — gpt-5.4 by default; set AUTONOTE_CODEX_MODEL to
-    # pick a different one (e.g. gpt-5.5, gpt-5.4-mini).
+    # often not available on a ChatGPT-plan login, so we override to
+    # gpt-5.1 (matches NOTE_MODEL used elsewhere in the pipeline).
+    # Set AUTONOTE_CODEX_MODEL to pick a different one when needed
+    # (e.g. gpt-5.4, gpt-5.5, gpt-5.4-mini on ChatGPT-only accounts).
     if _provider(model) == "codex-cli":
         import subprocess as _sp
         import tempfile as _tf
@@ -605,7 +606,7 @@ def _call(model: str, system: str, user: str, max_tokens: int,
         _os2.close(out_fd)
         try:
             prompt_text = f"{system}\n\n{user}" if system else user
-            codex_model = _os2.environ.get("AUTONOTE_CODEX_MODEL", "gpt-5.4")
+            codex_model = _os2.environ.get("AUTONOTE_CODEX_MODEL", "gpt-5.1")
             cmd = [
                 "codex", "exec",
                 "-m", codex_model,
