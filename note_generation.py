@@ -595,9 +595,10 @@ def _call(model: str, system: str, user: str, max_tokens: int,
     # have to parse the streaming event log on stdout.
     # The caller's ~/.codex/config.toml default (e.g. gpt-5.2-codex) is
     # often not available on a ChatGPT-plan login, so we override to
-    # gpt-5.1 (matches NOTE_MODEL used elsewhere in the pipeline).
-    # Set AUTONOTE_CODEX_MODEL to pick a different one when needed
-    # (e.g. gpt-5.4, gpt-5.5, gpt-5.4-mini on ChatGPT-only accounts).
+    # gpt-5.2 which is broadly available on ChatGPT plans. Set
+    # AUTONOTE_CODEX_MODEL to pick a different one — gpt-5.1 requires
+    # an API-key codex login, gpt-5.4 / gpt-5.5 / gpt-5.4-mini work on
+    # ChatGPT-only accounts.
     if _provider(model) == "codex-cli":
         import subprocess as _sp
         import tempfile as _tf
@@ -606,7 +607,7 @@ def _call(model: str, system: str, user: str, max_tokens: int,
         _os2.close(out_fd)
         try:
             prompt_text = f"{system}\n\n{user}" if system else user
-            codex_model = _os2.environ.get("AUTONOTE_CODEX_MODEL", "gpt-5.1")
+            codex_model = _os2.environ.get("AUTONOTE_CODEX_MODEL", "gpt-5.2")
             cmd = [
                 "codex", "exec",
                 "-m", codex_model,
@@ -1051,7 +1052,10 @@ def generate_section(
                 terms.add(t)
         term_list = ", ".join(sorted(terms)[:30])
         v_user = _P("verify").format(term_list=term_list, draft=draft[:2500])
-        _vmodel = NOTE_MODEL if NOTE_MODEL in ("claude-cli", "codex-cli") else VERIFY_MODEL
+        # Always route the verify/revision pass through VERIFY_MODEL
+        # (gpt-4o) — cheap and fast, avoids burning codex quota on a
+        # short review call. Caller must have an OpenAI key configured.
+        _vmodel = VERIFY_MODEL
         v_result = _call(_vmodel, "", v_user, 1500)
         if not v_result.strip().upper().startswith("APPROVED"):
             if len(v_result) > len(draft) * 0.3:
