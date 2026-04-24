@@ -1705,6 +1705,11 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
         on_change=lambda e: image_src_val.update({"v": e.data or e.control.value}),
         width=260,
     )
+    # Generator backend: default = configured NOTE_MODEL (OpenAI/etc.);
+    # opt-in = route all generation calls through the `codex` CLI
+    # (assumes the user has already run `codex login`).
+    codex_sw = ft.Switch(label="Use Codex CLI (runs `codex exec`, uses existing codex login)",
+                         value=False, active_color=C_PRIMARY)
 
     note_model   = _read_constant("generate", "NOTE_MODEL")
     verify_model = _read_constant("generate", "VERIFY_MODEL")
@@ -1729,6 +1734,8 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
             cmd.append("--merged")
         if image_src_val["v"] != "frames":
             cmd += ["--image-source", image_src_val["v"]]
+        if codex_sw.value:
+            cmd += ["--model", "codex-cli"]
         console.run(cmd)
 
     detail_styles = [
@@ -1777,6 +1784,7 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
                 _label("Options"),
                 per_video_sw,
                 image_src_dd,
+                codex_sw,
                 force_sw,
                 merge_sw,
                 iterate_sw,

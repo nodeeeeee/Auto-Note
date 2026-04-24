@@ -493,6 +493,7 @@ def menu_generate() -> None:
     force      = Confirm.ask("  Force regenerate existing sections?", default=False)
     merge_only = Confirm.ask("  Merge-only? (skip generation, re-merge + re-filter images)", default=False)
     iterate    = Confirm.ask("  Iterative mode? (keep raising detail until quality target)", default=False)
+    use_codex  = Confirm.ask("  Use Codex CLI? (routes generation through `codex exec`; requires prior `codex login`)", default=False)
 
     # ── Build command ─────────────────────────────────────────────────────────
     cmd = [
@@ -509,6 +510,8 @@ def menu_generate() -> None:
         cmd.append("--merge-only")
     if iterate:
         cmd.append("--iterate")
+    if use_codex:
+        cmd += ["--model", "codex-cli"]
 
     console.print()
     _run(cmd)

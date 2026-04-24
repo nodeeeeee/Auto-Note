@@ -417,6 +417,8 @@ def _max_tokens(level: int) -> int:
 def _provider(model: str) -> str:
     if model == "claude-cli":
         return "claude-cli"
+    if model == "codex-cli":
+        return "codex-cli"
     if model.startswith("gemini"):
         return "gemini"
     if model.startswith("claude"):
@@ -535,7 +537,8 @@ def _translate(text: str, lang: str) -> str:
         f"时使用同一个 key。\n\n"
         f"---\n\n{text}"
     )
-    return _call(TRANSLATE_MODEL, system, prompt, len(text) * 3)
+    _tmodel = NOTE_MODEL if NOTE_MODEL in ("claude-cli", "codex-cli") else TRANSLATE_MODEL
+    return _call(_tmodel, system, prompt, len(text) * 3)
 
 
 _MODEL_MAX_COMPLETION = {
@@ -587,6 +590,48 @@ def _call(model: str, system: str, user: str, max_tokens: int,
         if result.returncode != 0 and not content:
             raise RuntimeError(f"claude -p failed (code {result.returncode}): {result.stderr[:500]}")
         return content
+
+    # ── Codex CLI mode: call `codex exec` as subprocess ──────────────────
+    # Auth is handled by the `codex` CLI itself (prior `codex login`).
+    # We run non-interactively, read-only sandbox, outside a git repo, and
+    # capture only the agent's final message via `-o <file>` so we don't
+    # have to parse the streaming event log on stdout.
+    if _provider(model) == "codex-cli":
+        import subprocess as _sp
+        import tempfile as _tf
+        import os as _os2
+        out_fd, out_file = _tf.mkstemp(prefix="codex_out_", suffix=".txt")
+        _os2.close(out_fd)
+        try:
+            prompt_text = f"{system}\n\n{user}" if system else user
+            cmd = [
+                "codex", "exec",
+                "--skip-git-repo-check",
+                "-s", "read-only",
+                "-o", out_file,
+                "-",  # read prompt from stdin
+            ]
+            result = _sp.run(
+                cmd, input=prompt_text, capture_output=True, text=True,
+                timeout=1800,
+            )
+            try:
+                content = Path(out_file).read_text(encoding="utf-8").strip()
+            except Exception:
+                content = ""
+            if _truncated is not None:
+                _truncated.append(False)  # CLI handles its own limits
+            if result.returncode != 0 and not content:
+                err = (result.stderr or result.stdout or "").strip()
+                raise RuntimeError(
+                    f"codex exec failed (code {result.returncode}): {err[:500]}"
+                )
+            return content
+        finally:
+            try:
+                Path(out_file).unlink()
+            except Exception:
+                pass
 
     client = _get_client_for(model)
 
@@ -996,7 +1041,7 @@ def generate_section(
                 terms.add(t)
         term_list = ", ".join(sorted(terms)[:30])
         v_user = _P("verify").format(term_list=term_list, draft=draft[:2500])
-        _vmodel = NOTE_MODEL if NOTE_MODEL == "claude-cli" else VERIFY_MODEL
+        _vmodel = NOTE_MODEL if NOTE_MODEL in ("claude-cli", "codex-cli") else VERIFY_MODEL
         v_result = _call(_vmodel, "", v_user, 1500)
         if not v_result.strip().upper().startswith("APPROVED"):
             if len(v_result) > len(draft) * 0.3:
@@ -2138,7 +2183,7 @@ def main() -> None:
     parser.add_argument("--score",      action="store_true",
                         help="Enable self-scoring (dev mode: prints coverage/terminology scores)")
     parser.add_argument("--model",      metavar="MODEL", default=None,
-                        help="Override NOTE_MODEL (e.g. claude-cli, gemini-2.5-flash)")
+                        help="Override NOTE_MODEL (e.g. codex-cli, claude-cli, gemini-2.5-flash)")
     args = parser.parse_args()
 
     if args.score:
