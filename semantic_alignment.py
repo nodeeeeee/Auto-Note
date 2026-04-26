@@ -165,13 +165,17 @@ class ImageDescriber:
     # ── lazy loaders ─────────────────────────────────────────────────────────
 
     def _ensure_ocr(self) -> bool:
+        # OCR is an optional enhancement layered on top of the GPT-4o-mini
+        # vision pass — when both are available we concatenate verbatim text
+        # (OCR) with structural description (vision). When pytesseract or
+        # the tesseract binary isn't installed we silently fall back to
+        # vision-only; no warning needed.
         if self._ocr_ok is None:
             try:
                 import pytesseract
                 pytesseract.get_tesseract_version()
                 self._ocr_ok = True
             except Exception:
-                print("  [img] pytesseract not available — OCR skipped")
                 self._ocr_ok = False
         return self._ocr_ok
 
