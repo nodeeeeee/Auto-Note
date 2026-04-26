@@ -176,6 +176,8 @@ class TestFilterImagesPass:
         ld = MagicMock()
         ld.num = 1
         ld.file_idx = 1
+        ld.dir_key = "L01"
+        ld.source = "slides"
         ld.img_cache = {}
         ld.slides = [
             ng.SlideInfo(idx, label, text)

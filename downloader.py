@@ -1022,6 +1022,46 @@ def _hls_has_audio(stream_url: str, ff_bin: str | None = None) -> bool:
         return True  # don't block download on probe failure
 
 
+def _run_ffmpeg_hls_merge(video_url: str, audio_url: str,
+                          out_path: Path, progress_cb) -> None:
+    """Merge a video-only HLS stream with an audio-only HLS stream.
+
+    Used when the screen-recording stream (OBJECT/SS) has no audio track and
+    the audio lives in a separate DV/AUDIO stream. Produces one MP4 with the
+    screen video and the lecturer's audio.
+    """
+    ff_bin = _resolve_ffmpeg()
+    if not ff_bin:
+        raise RuntimeError(
+            "ffmpeg not found. Install ffmpeg or `pip install imageio-ffmpeg`."
+        )
+    cmd = [
+        ff_bin, "-y", "-loglevel", "error",
+        "-i", video_url,
+        "-i", audio_url,
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-c", "copy",
+        "-shortest",
+        str(out_path),
+    ]
+    try:
+        from ffmpeg_progress_yield import FfmpegProgress
+        ff = FfmpegProgress(cmd)
+        for pct in ff.run_command_with_progress():
+            progress_cb(pct)
+        if not out_path.exists() or out_path.stat().st_size < 1024:
+            raise RuntimeError(
+                f"ffmpeg produced no output for {out_path.name} — "
+                f"video/audio merge failed."
+            )
+    except ImportError:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode != 0:
+            tail = (result.stderr or "").strip().splitlines()[-10:]
+            raise RuntimeError(f"ffmpeg merge failed:\n" + "\n".join(tail))
+        progress_cb(100)
+
+
 def _run_ffmpeg_hls(stream_url: str, out_path: Path, progress_cb) -> None:
     """Download an HLS master.m3u8 stream to *out_path* via ffmpeg.
 
@@ -1158,36 +1198,69 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
         return False
 
     # Record which tags existed so the frame extractor can tell a true camera
-    # recording from a DV-with-audio fallback whose OBJECT/SS screen stream
-    # was only rejected for lacking an audio track.
+    # recording from a split-stream case where the audio is in DV but the
+    # screen video is in OBJECT/SS.
     available_tags = [ct for (_, _, ct) in candidates]
     has_screen_stream = any(t in ("SS", "OBJECT") for t in available_tags)
 
-    # Probe each candidate for an audio track. Panopto screen-recording
-    # streams (SS/OBJECT) sometimes pack audio only in the DV variant, so
-    # we fall back through all available streams rather than trusting the
-    # first by tag.
-    stream_url = dl_headers = stream_tag = None
+    # Classify each candidate as "video-with-audio" or "video-only" up front.
+    # Panopto screen recordings often store SS/OBJECT (screen content, no
+    # audio) alongside DV (camera + audio). When both exist, we want the
+    # screen video AND the DV audio — merged by ffmpeg — so notes see slides
+    # as frames AND the transcript carries lecture audio.
+    video_cand = audio_cand = None   # (url, headers, tag, is_m3u8)
     tried = []
     for (cu, ch, ct) in candidates:
         tried.append(ct)
-        # Only HLS master playlists are audio-probable from here. Direct
-        # authenticated URLs (non-m3u8) go straight through.
-        if "master.m3u8" not in cu or _hls_has_audio(cu):
-            stream_url, dl_headers, stream_tag = cu, ch, ct
-            break
-        tqdm.write(f"  Stream '{ct}' has no audio — trying next candidate")
-    if stream_url is None:
+        is_m3u8 = "master.m3u8" in cu
+        has_audio = (not is_m3u8) or _hls_has_audio(cu)
+        # Preferred screen stream (first one we see that is SS/OBJECT) becomes
+        # the chosen VIDEO source — regardless of whether it has audio.
+        if video_cand is None and ct in ("SS", "OBJECT"):
+            video_cand = (cu, ch, ct, is_m3u8, has_audio)
+        # First stream with audio becomes the audio source.
+        if audio_cand is None and has_audio:
+            audio_cand = (cu, ch, ct, is_m3u8, has_audio)
+
+    # If we never saw a screen stream, fall back to the audio-bearing stream
+    # (treat its video as the video source too).
+    if video_cand is None:
+        if audio_cand is None:
+            tqdm.write(
+                f"  [error] No stream with audio found for {title} "
+                f"(tried: {', '.join(tried)}) — skipping; the recording "
+                f"itself appears to be video-only.")
+            manifest[key] = {
+                "status": "error", "title": title,
+                "error": "no-audio-track",
+            }
+            raise RuntimeError(f"No audio track in any Panopto stream for '{title}'")
+        video_cand = audio_cand
+    if audio_cand is None:
+        # Screen stream exists but nothing has audio — still skip.
         tqdm.write(
-            f"  [error] No stream with audio found for {title} "
-            f"(tried: {', '.join(tried)}) — skipping; the recording itself "
-            f"appears to be video-only.")
+            f"  [error] Video streams exist but none has audio for {title} "
+            f"(tried: {', '.join(tried)}) — skipping.")
         manifest[key] = {
             "status": "error", "title": title,
             "error": "no-audio-track",
         }
         raise RuntimeError(f"No audio track in any Panopto stream for '{title}'")
-    tqdm.write(f"  Stream type: {stream_tag}")
+
+    merge_needed = (
+        video_cand[0] != audio_cand[0]        # different stream URLs
+        and video_cand[3] and audio_cand[3]   # both HLS master playlists
+    )
+    stream_url    = video_cand[0]
+    dl_headers    = video_cand[1]
+    stream_tag    = video_cand[2]
+    audio_url     = audio_cand[0] if merge_needed else None
+    audio_tag     = audio_cand[2] if merge_needed else None
+    if merge_needed:
+        tqdm.write(
+            f"  Stream type: {stream_tag} video + {audio_tag} audio (merging)")
+    else:
+        tqdm.write(f"  Stream type: {stream_tag}")
 
     bar = tqdm(total=100, desc=f"  {title[:50]}", unit="%",
                bar_format="{desc} |{bar}| {n:3d}/{total}%", leave=True)
@@ -1200,6 +1273,9 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
         if dl_headers:
             # Direct authenticated download (e.g. REST API DownloadUrl)
             _download_authenticated(stream_url, out_path, dl_headers, progress_cb)
+        elif audio_url:
+            # Split-stream case: screen video (no audio) + separate audio stream.
+            _run_ffmpeg_hls_merge(stream_url, audio_url, out_path, progress_cb)
         elif "master.m3u8" in stream_url:
             # HLS stream — always use ffmpeg. PanoptoDownloader's HLS path
             # is broken for URLs with query strings (its endswith('master.m3u8')

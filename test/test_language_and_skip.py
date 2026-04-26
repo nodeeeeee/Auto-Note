@@ -365,18 +365,22 @@ class TestNoteGenerationSkipLogic:
 
     def test_section_cache_respected(self, tmp_path):
         """generate_section should return cached content without --force."""
-        from note_generation import _section_path
+        from note_generation import _section_path, LectureData
 
         sections_dir = tmp_path / "sections"
         sections_dir.mkdir()
 
-        # Create a cached section file (must be > 500 bytes to pass cache check)
-        sec_file = _section_path(sections_dir, 1, 1, 1)
+        slide_path = tmp_path / "lec1.pdf"
+        slide_path.write_bytes(b"%PDF-1.4 dummy")
+        ld = LectureData(num=1, slide_path=slide_path, alignment_path=None)
+
+        sec_file = _section_path(sections_dir, ld, 1)
         content = "### 1.1 Cached Content\n\n" + ("This was previously generated. " * 30)
         sec_file.write_text(content)
 
         assert sec_file.exists()
         assert sec_file.stat().st_size > 50
+        assert ld.dir_key in sec_file.name
 
     def test_help_shows_force_flag(self):
         r = _run("note_generation.py", "--help")
