@@ -1,276 +1,207 @@
 # AutoNote
 
-AutoNote is a desktop application that automatically generates comprehensive study notes from Canvas LMS lecture materials and videos. It downloads slides and videos, transcribes audio, aligns the transcript to slide pages, and produces Markdown note files per lecture using an LLM.
+AutoNote turns Canvas / Panopto lecture recordings into Markdown study notes.
+It downloads videos and slides, transcribes the audio, lines up each transcript
+with the slide that was on screen, and asks an LLM to write up the lecture as
+clean notes — one Markdown file per video, with images embedded.
+
+If you have lecture videos and slides somewhere on Canvas, AutoNote will turn
+them into notes you can read.
 
 ---
 
 ## Quick start
 
-1. **Launch** the AutoNote AppImage / installer. On first launch, a **setup wizard** guides you through installing the ML environment.
-2. **Settings** → enter Canvas URL and Canvas token → **Save All** → **Refresh Courses**
-3. **Settings** → enter at least one LLM API key (OpenAI / Anthropic / Gemini), or use **Claude CLI** if you have Claude Code installed (no API key needed)
-4. **Pipeline** → select course → click **Run Pipeline**
+1. **Install** the AutoNote app for your platform (Windows, macOS, Linux).
+2. On first launch the **setup wizard** installs the Python ML environment
+   (~2 GB). Click **Install and Continue** and wait ~10 min.
+3. Open **Settings** and fill in:
+   - **Canvas URL** (e.g. `canvas.nus.edu.sg`)
+   - **Canvas Token** (Canvas → Account → Settings → New Access Token)
+   - one **LLM API key** — OpenAI, Anthropic, or Gemini.
+     *(Or skip API keys: pick **Codex CLI** or **Claude CLI** as the backend
+     if you have either installed and logged in.)*
+4. Click **Save All** → **Refresh Courses**.
+5. Go to **Pipeline**, pick a course, click **Run Pipeline**.
+
+When it's done, your notes are in `~/AutoNote/<course>/notes/` (or your
+chosen Output Dir).
 
 ---
 
-## Interface overview
+## The seven pages
 
-The app has seven pages, accessible from the left navigation rail:
+| Page | What it's for |
+|------|---------------|
+| **Dashboard** | Overview of every course you have access to. Click a course card to see per-video status and delete bad notes. |
+| **Pipeline** | One-click full run: download → transcribe → align → generate. The fastest path to "I want notes for this course." |
+| **Download** | Just downloading: pick specific videos or materials. |
+| **Transcribe** | Just Whisper transcription, on already-downloaded videos. |
+| **Align** | Just match transcripts to slides / video frames. |
+| **Generate Notes** | Just the LLM step. Use this to re-generate or tweak settings without redoing the heavy work. |
+| **Settings** | API keys, Canvas / Panopto URLs, ML environment management. |
 
-| Page | Purpose |
-|------|---------|
-| **Dashboard** | Course overview: video / caption / alignment counts per course; click a course to view per-video status and delete generated files |
-| **Pipeline** | One-click full pipeline wizard with pipelined execution |
-| **Download** | Fine-grained control over video and material downloads |
-| **Transcribe** | Transcribe downloaded videos to timestamped captions |
-| **Align** | Map caption segments to specific slide pages |
-| **Generate Notes** | Generate the final Markdown study notes |
-| **Settings** | API keys, ML environment, model selection, tunable constants |
-
-Every page has a **terminal panel** pinned to the bottom that streams live output. The **Stop** button cancels the running process at any time.
-
----
-
-## First-time setup
-
-### Setup wizard (automatic)
-
-On first launch, AutoNote checks if the required ML environment is installed. If not, a **setup wizard** appears with:
-
-- **Required components** (pre-checked, cannot be skipped): Core Python packages for the pipeline
-- **Optional components** (pre-checked, can be unchecked):
-  - Local transcription (faster-whisper + GPU)
-  - Local embeddings (sentence-transformers + FAISS)
-  - BGE-M3 model for high-quality video-slide matching
-  - Panopto video download (Playwright browser)
-
-Click **Install and Continue** to install everything, or **Skip for now** to configure later in Settings.
-
-### Connection settings
-
-Open **Settings** and fill in the **Connection** card:
-
-| Field | Value |
-|-------|-------|
-| **Canvas URL** | Your institution's Canvas domain (e.g. `canvas.nus.edu.sg`). |
-| **Panopto Host** | Panopto video host (e.g. `mediaweb.ap.panopto.com`). Leave blank — it is auto-detected. |
-| **Output Dir** | Directory where all pipeline files are stored (default: `~/AutoNote`). |
-
-### API keys
-
-Fill in the **API Keys & Credentials** card:
-
-| Field | Required for |
-|-------|-------------|
-| **Canvas Token** | Downloading materials and listing videos. Get it from Canvas → Account → Settings → New Access Token. |
-| **OpenAI API Key** | Note generation with OpenAI models (gpt-5.1, gpt-4.1, o3, ...). |
-| **Anthropic API Key** | Note generation with Claude models via API. |
-| **Gemini API Key** | Note generation with Gemini models; also enables the Google `text-embedding-004` option for video↔slide matching. |
-| **Jina API Key** | Optional: enables the `jina-embeddings-v4` remote option (text + multimodal) for video↔slide matching. |
-
-Alternatively, if you have **Claude Code** installed on your computer, you can select **Claude CLI (local)** as the note generation model — no API key needed.
-
-Click **Save All**, then **Refresh Courses**.
-
-> **GPU note:** Whisper large-v3 and sentence-transformer embeddings run on GPU. A CUDA-capable GPU with >= 8 GB VRAM is recommended. The app works on CPU but transcription will be much slower.
+A terminal panel at the bottom of every page streams live output. Click **Stop**
+to cancel a run.
 
 ---
 
-## Running the full pipeline
+## Pipeline page
 
-Go to **Pipeline**, select a course from the dropdown, and click **Run Pipeline**.
+Tick which steps to run, set the options below, click **Run Pipeline**.
 
-### Pipeline steps
+### Steps
 
-| # | Step | What it does |
-|---|------|-------------|
-| 1 | **Download materials** | Downloads all lecture slides, PDFs, and other files from Canvas |
-| 2 | **Download videos** | Downloads all Panopto lecture recordings (MP4) |
-| 3 | **Transcribe + Align** | Transcribes videos, extracts frames from screen recordings, and aligns transcripts to slides. Uses **pipelined threading**: while video N+1 is transcribing, video N's frames are extracted concurrently. |
-| 4 | **Generate study notes** | Sends slides + aligned transcripts to an LLM to generate one Markdown note file per lecture |
+You can independently enable or disable each step. Run the whole thing on a
+new course, or just the last step when you're tweaking notes.
 
-Each step only runs if the previous step succeeded. You can uncheck any step to skip it.
+- Download materials
+- Download videos
+- Transcribe videos
+- Align transcripts
+- Generate study notes
 
-### Pipeline options
+### Note generation options
 
-| Option | Description |
-|--------|-------------|
-| **Slack mode** | Adds random delays between downloads to avoid rate-limiting. |
-| **Course name** | Name that appears in the final notes file (auto-filled when you select a course). |
-| **Language** | Language for generated notes: English or Chinese. Selectable per-run — notes are generated in English first, then translated. Changing language auto-regenerates cached sections. |
-| **Detail level** | Controls note verbosity (0-2 outline, 3-5 bullets, 6-8 paragraphs, 9-10 exhaustive). |
-| **Lecture filter** | Process only specific lectures, e.g. `1-5` or `1,3,5`. Leave blank for all. |
-| **Force regenerate** | Re-run the selected pipeline steps even if output files already exist. Without this, only missing files are processed. |
+| Option | What it does |
+|--------|--------------|
+| **Course name** | Title that appears on the generated notes. Auto-filled when you pick a course. |
+| **Language** | English or 中文. Switching languages re-runs the LLM step. |
+| **Image source** | **Video screenshots** (default) — extract frames straight from the recording. **Slide PDFs** — render the downloaded slides instead. Pick screenshots when the lecturer used materials they didn't upload to Canvas. |
+| **Backend** | **Default** uses your configured API key (OpenAI / Anthropic / Gemini). **Codex CLI** uses your `codex login` (no API key). **Claude CLI** uses your Claude Code login (no API key). |
+| **Detail level** | 0–10 slider. 0–2 outline, 3–5 bullets, 6–8 paragraphs (default 7), 9–10 exhaustive. |
+| **Lecture filter** | Only process specific lectures, e.g. `1-5` or `1,3,5`. Blank = all. |
+| **Force regenerate** | Ignore cached sections and start over. |
+| **Slack mode** | Adds a 5–15 min random pause between video downloads to avoid rate-limiting. |
 
-### Screen recording detection
+### Image source: which one to pick?
 
-For screen-share videos (slide recordings), the pipeline automatically:
-1. Classifies the video as screen vs camera using heuristics
-2. Extracts unique frames via scene detection + perceptual hash deduplication
-3. Picks the most informative frame per slide page (handles incremental reveals)
-4. Builds timestamp-based transcript-to-frame alignment
+| You have… | Pick |
+|-----------|------|
+| The lecture's slide PDFs in Canvas Files | Either works. **Video screenshots** is slightly more aligned with what was actually shown. |
+| Only the videos (no slide PDFs) | **Video screenshots** — it doesn't need the slides to exist. |
+| Slides only, no videos | **Slide PDFs** (and skip the transcribe / align steps). |
 
-Camera recordings use traditional slide-based alignment with PDF/PPTX files.
+If you pick **Video screenshots**, you can leave **Download materials**
+unchecked — AutoNote won't ask for slides it doesn't need.
 
-### Video↔slide matching models
+> **Tip.** For picture-in-picture lectures (slides + a webcam overlay)
+> AutoNote's screen-vs-camera classifier sometimes used to bail out and skip
+> frame extraction. Picking **Video screenshots** explicitly now forces frame
+> extraction regardless of how the classifier votes.
 
-For pairing each transcript to its slide file, the pipeline uses an embedding model picked by `python semantic_alignment.py --suggest-matches --match-model <MODEL>`:
+### Backend: which one to pick?
 
-| Model | Type | Requires | Get key / model |
-|-------|------|----------|-----------------|
-| `bge-m3` *(default)* | Local (`BAAI/bge-m3`, ~2.3 GB) | NVIDIA GPU **≥ 6 GB VRAM** recommended (CUDA 11.8+); runs on CPU at ~10× slower. Auto-downloaded from [huggingface.co/BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3) on first use | — |
-| `mpnet` | Local (`all-mpnet-base-v2`, ~420 MB) | Any GPU **≥ 2 GB VRAM** or CPU (acceptable speed). Auto-downloaded from [huggingface.co/sentence-transformers/all-mpnet-base-v2](https://huggingface.co/sentence-transformers/all-mpnet-base-v2) | — |
-| `jina` | Remote (`jina-embeddings-v4`) | `JINA_API_KEY` env var or `jina_api.txt` in data dir | [jina.ai/api-dashboard](https://jina.ai/api-dashboard/) (free tier available) |
-| `google` | Remote (`text-embedding-004`) | `GEMINI_API_KEY` / `GOOGLE_API_KEY` env var or `gemini_api.txt` in data dir | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (free tier available) |
+| Backend | When to use it |
+|---------|----------------|
+| **Default (NOTE_MODEL)** | You have an API key. Set the model in Settings → Tunable Constants. Best quality and parallelism. |
+| **Codex CLI** | You have an OpenAI ChatGPT subscription and `codex login` was successful. No API key needed. |
+| **Claude CLI** | You have Claude Code installed locally. No API key needed. |
 
-> **GPU guidance for local models.** Whisper large-v3 transcription dominates VRAM usage (~10 GB); embedding models fit alongside on a **12–16 GB** card (RTX 3060 12 GB, 4070, 4080, etc.). With only **6–8 GB** VRAM, prefer `mpnet` over `bge-m3`, or switch to a remote option so the GPU is free for Whisper. On CPU, remote (`jina` / `google`) is almost always faster than local embeddings.
-
-> **Other API keys mentioned above.** OpenAI: [platform.openai.com/api-keys](https://platform.openai.com/api-keys). Anthropic: [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys). Canvas: Canvas → Account → Settings → **New Access Token**.
-
-Remote options let the matcher run without any local ML environment — the `google` model reuses the same Gemini key used for note generation.
-
----
-
-## Dashboard
-
-Click any course card to open a **detail modal** showing all transcribed videos with their processing status:
-
-- **Aligned** / **No align**: whether the video has been aligned to slides
-- **Notes** / **No notes**: whether note sections exist for this video
-- **Delete** button: removes the transcript, alignment, note sections, per-video notes, and rendered images for that video
+The first time you switch to Codex or Claude CLI on the Settings page,
+AutoNote checks that the binary is on your `PATH`.
 
 ---
 
 ## Generate Notes page
 
-Generates one Markdown note file per lecture (multi-part lectures are merged into a single file).
+Same options as the Pipeline page's note-generation block, but without the
+download / transcribe / align steps. Useful when you want to:
 
-### Options
+- Re-run with a different language
+- Re-run with a different backend
+- Try a different image source
+- Re-generate a single lecture
 
-| Option | Description |
-|--------|-------------|
-| **Course name** | Used as the note file name and title. Auto-filled when you select a course. |
-| **Language** | English or Chinese — selectable per-run. |
-| **Lecture filter** | Generate notes for specific lectures only. |
-| **Detail level** | 0-10 slider. Default: 7. |
-| **Force regenerate** | Re-generate all sections. Without this, cached sections are reused. |
-| **Merge-only** | Re-run the merge pass without re-generating any sections. |
-| **Iterative mode** | Automatically raises detail level until quality target is met. |
-
-### Output structure
-
-```
-<Output Dir>/<course_id>/notes/
-├── CS2105_L01_notes.md       Per-lecture note files
-├── CS2105_L02_notes.md
-├── sections/
-│   ├── L01_S01.md            Cached per-chunk sections (resumable)
-│   ├── L01_S02.md
-│   └── .language             Language marker for cache invalidation
-└── images/
-    ├── L01/                  Rendered slide images
-    └── L02/
-```
-
-Each note file includes **source metadata** at the top:
-```
-- **Video**: CS2105 Lecture on 1_23_2026 (Fri)
-- **Slides**: Lecture 1 - Introduction.pdf
-```
-
-Notes are **resumable**: re-running skips sections already cached on disk. Only missing sections are generated. Truncated responses (LLM token limit) are detected and not cached, so they auto-regenerate on the next run.
+The note generator caches every chunk it produces under `notes/sections/`,
+so re-running picks up where it left off — only the chunks that need
+regenerating are re-asked. Switching language or hitting **Force regenerate**
+invalidates the cache automatically.
 
 ---
 
-## Supported LLM models
+## Where your files end up
 
-| Provider | Models |
-|----------|--------|
-| **OpenAI** | gpt-5.1, gpt-5.2, gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, o3, o4-mini |
-| **Anthropic** | Claude Opus 4.6, Sonnet 4.6, Sonnet 4.5, Haiku 4.5 |
-| **Google** | Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 2.0 Flash |
-| **DeepSeek** | DeepSeek V3, DeepSeek R1 |
-| **xAI** | Grok 3, Grok 3 mini |
-| **Mistral** | Mistral Large, Medium, Small, Codestral |
-| **Claude CLI** | Uses local `claude -p` (no API key needed, requires Claude Code installed) |
+By default everything lives in `~/AutoNote/` (configurable in Settings).
+For each course:
 
-Use `--model` on the CLI to override: `python note_generation.py --model claude-cli --language zh`
+```
+~/AutoNote/<course_id>/
+├── videos/        Downloaded MP4 recordings
+├── materials/     Slides, PDFs (only if you downloaded them)
+├── captions/      Whisper transcripts (JSON)
+├── frames/        Video screenshots (only if image source = frames)
+├── alignment/     Caption ↔ slide / frame mapping (JSON)
+└── notes/
+    ├── <Course> on 1_23_2026 (Fri)_notes.md     ← your notes
+    ├── sections/                                 ← cached chunks
+    └── images/                                   ← embedded pictures
+```
+
+The notes file is a self-contained Markdown document — open it in any
+viewer, push it to Obsidian, paste it into Notion, share it with classmates.
 
 ---
 
-## Incremental updates
+## Dashboard
 
-| Scenario | What to do |
-|----------|-----------|
-| New lecture added to Canvas | Re-run the pipeline — only new sections are generated |
-| Slides updated for a lecture | **Generate Notes → Lecture filter + Force regenerate** for that lecture |
-| Want to change note language | Select the new language — cached sections auto-regenerate when the language differs |
-| Want to delete bad notes | Dashboard → click course card → click **Delete** next to the video |
-| Pipeline stopped partway | Just run again — completed steps are skipped |
+Click any course card. The detail modal shows every video and per-video
+status badges:
 
----
-
-## File layout
-
-All pipeline output lives under the configured **Output Dir** (`~/AutoNote` by default):
-
-```
-~/AutoNote/
-├── manifest.json                    Video download state
-├── <course_id>/
-│   ├── videos/                      Downloaded MP4 recordings
-│   ├── materials/                   Downloaded slides, PDFs
-│   ├── captions/                    Whisper transcripts (JSON)
-│   ├── frames/                      Extracted screen recording frames
-│   ├── alignment/                   Alignment JSON per slide file
-│   └── notes/                       Generated notes + images
-└── download_log.json                Material download log
-```
-
-App configuration and ML environment:
-
-```
-~/.auto_note/
-├── config.json          Canvas URL, Panopto host, output dir
-├── canvas_token.txt     Canvas API token
-├── openai_api.txt       OpenAI API key
-├── anthropic_key.txt    Anthropic API key
-├── gemini_api.txt       Gemini API key
-├── scripts/             Pipeline scripts (installed from AppImage)
-└── venv/                ML virtual environment
-```
+- **Aligned** / **No align** — has the transcript been matched to slides
+  or frames yet?
+- **Notes** / **No notes** — do generated note sections exist?
+- **Delete** — wipes captions, alignment, note sections, and images for
+  that one video, so you can re-run cleanly.
 
 ---
 
-## Windows installation
+## Output language
 
-Two installer formats are available:
-- **NSIS (.exe)** — traditional installer
-- **MSIX (.appx)** — modern Windows package (less SmartScreen friction)
-
-When uninstalling from Windows Settings, a dialog asks what to keep:
-- Generated notes and downloads (kept by default)
-- Settings and API keys (kept by default)
-- ML environment ~2 GB (deleted by default)
+AutoNote can write notes in **English** or **中文**. The LLM drafts in
+English first, then a separate translation pass produces the Chinese version
+when you pick `zh`. Switching language regenerates only what needs to change.
 
 ---
 
 ## Troubleshooting
 
-**"No courses loaded" on the Dashboard**
-→ Go to Settings, enter Canvas URL and Canvas token, click Save All, then Refresh Courses.
+**"No courses loaded" on the Dashboard.**
+Go to **Settings**, fill in Canvas URL + Canvas token, click **Save All**,
+then **Refresh Courses**.
 
-**Video list shows 0 videos for a course**
-→ The Panopto host has not been detected yet. Click **List videos** once; it is auto-detected. If it still fails, enter the Panopto domain manually in Settings.
+**Generation finished but the notes have no images.**
+The screen-vs-camera classifier can mis-classify lectures with a webcam
+overlay. Re-run the Pipeline with **Image source = Video screenshots** —
+that bypasses the classifier and forces frames to be extracted.
 
-**Transcription is very slow**
-→ Running on CPU. Ensure CUDA GPU is present and PyTorch was installed with GPU support. Use Settings → ML Environment → **Reinstall** if needed.
+**Video list shows 0 videos for a course.**
+The Panopto host hasn't been auto-detected yet. Click **List videos** once.
+If it still fails, fill in the Panopto domain manually in Settings.
 
-**ModuleNotFoundError when running the pipeline**
-→ The ML environment is missing packages. Go to Settings → ML Environment → **Reinstall**.
+**Transcription is very slow.**
+You're running on CPU. Make sure CUDA is installed and use **Settings →
+ML Environment → Reinstall**.
 
-**Notes are in the wrong language**
-→ Select the correct language from the Pipeline or Generate page dropdown. If cached sections exist in the old language, they are automatically regenerated.
+**`ModuleNotFoundError` mid-pipeline.**
+The ML venv is missing a package. **Settings → ML Environment → Reinstall**.
 
-**Notes have truncated sections**
-→ The LLM hit its token limit. Truncated sections are not cached, so re-running will regenerate them. If it persists, try a model with a larger output window.
+**A note section looks cut off.**
+The LLM hit its output token limit. Truncated sections aren't cached, so
+re-running just regenerates them. If it keeps happening, switch to a model
+with a larger output window in Settings.
+
+**The downloaded video has no audio.**
+Some Panopto recordings split the screen video and microphone audio into
+separate streams. AutoNote merges them automatically with ffmpeg, but the
+merge needs `ffmpeg` installed (the installer ships it). If you see this,
+**Settings → ML Environment → Reinstall**.
+
+---
+
+## Need to script it?
+
+AutoNote is a wrapper over a small set of Python scripts (`downloader.py`,
+`extract_caption.py`, `frame_extractor.py`, `semantic_alignment.py`,
+`note_generation.py`). If you want CLI-level control, batch automation, or
+to contribute, see **DeveloperGuide.md**.
