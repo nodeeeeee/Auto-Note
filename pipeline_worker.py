@@ -115,8 +115,14 @@ def transcribe_one(video: dict, force: bool) -> bool:
     return _run(cmd, f"Transcribe: {video['stem']}")
 
 
-def extract_frames_one(video: dict) -> bool:
-    """Extract frames from a single video (if screenshare)."""
+def extract_frames_one(video: dict, force_screen: bool = False) -> bool:
+    """Extract frames from a single video (if screenshare).
+
+    When ``force_screen`` is True the camera/screen auto-classifier is
+    bypassed so frames are extracted unconditionally — used when the user
+    explicitly chose "video screenshots" in the UI and expects images even
+    from camera-style recordings.
+    """
     caption = video["course_dir"] / "captions" / f"{video['stem']}.json"
     if not caption.exists():
         return True  # no caption yet, skip frame extraction
@@ -135,6 +141,8 @@ def extract_frames_one(video: dict) -> bool:
            "--video", str(video["path"]),
            "--caption", str(caption),
            "--course-dir", str(video["course_dir"])]
+    if force_screen:
+        cmd.append("--force-screen")
     return _run(cmd, f"Extract frames: {video['stem']}")
 
 
@@ -174,7 +182,8 @@ def align_one(video: dict, force: bool) -> bool:
 
 
 def pipeline_sequential(videos: list[dict], force: bool,
-                        skip_frames: bool = False) -> None:
+                        skip_frames: bool = False,
+                        force_screen: bool = False) -> None:
     """Simple sequential pipeline: transcribe → frames → align per video."""
     for i, video in enumerate(videos, 1):
         print(f"\n{'═' * 60}")
@@ -183,7 +192,7 @@ def pipeline_sequential(videos: list[dict], force: bool,
 
         transcribe_one(video, force)
         if not skip_frames:
-            extract_frames_one(video)
+            extract_frames_one(video, force_screen=force_screen)
 
     # Alignment is best done course-level (batch BGE-M3 matching)
     if videos:
@@ -196,7 +205,8 @@ def pipeline_sequential(videos: list[dict], force: bool,
 
 
 def pipeline_threaded(videos: list[dict], force: bool,
-                      skip_frames: bool = False) -> None:
+                      skip_frames: bool = False,
+                      force_screen: bool = False) -> None:
     """Threaded pipeline: transcribe and frame-extract/align overlap.
 
     Thread 1 (transcriber): transcribes videos one at a time, pushes
@@ -229,7 +239,7 @@ def pipeline_threaded(videos: list[dict], force: bool,
             if skip_frames:
                 continue  # frames disabled — drain the queue only
             print(f"\n  Processing frames: {video['stem']}", flush=True)
-            extract_frames_one(video)
+            extract_frames_one(video, force_screen=force_screen)
 
     t1 = threading.Thread(target=transcriber, name="transcriber")
     t2 = threading.Thread(target=frame_processor, name="frame-processor")
@@ -268,6 +278,13 @@ def main() -> None:
                              "description. Use this when you plan to generate "
                              "notes with --image-source slides — the frames "
                              "and their descriptions are never read.")
+    parser.add_argument("--force-screen", action="store_true",
+                        help="Bypass the camera/screen auto-classifier in the "
+                             "frame extractor and always extract frames. Pass "
+                             "this when the user has explicitly chosen video "
+                             "screenshots so camera-style recordings still "
+                             "produce images instead of falling through to "
+                             "missing slide PDFs.")
     args = parser.parse_args()
 
     base_dir = Path(args.path) if args.path else COURSE_DATA_DIR
@@ -281,9 +298,11 @@ def main() -> None:
     print(f"Found {len(videos)} video(s) for course {args.course}.")
 
     if args.sequential:
-        pipeline_sequential(videos, args.force, skip_frames=args.skip_frames)
+        pipeline_sequential(videos, args.force, skip_frames=args.skip_frames,
+                            force_screen=args.force_screen)
     else:
-        pipeline_threaded(videos, args.force, skip_frames=args.skip_frames)
+        pipeline_threaded(videos, args.force, skip_frames=args.skip_frames,
+                          force_screen=args.force_screen)
 
     print(f"\n✓ Pipeline complete: {len(videos)} video(s) processed.")
 

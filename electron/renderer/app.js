@@ -1553,10 +1553,13 @@ async function attachPageHandlers() {
         // Uses threading so transcription of video N+1 overlaps with
         // frame extraction of video N. Skip frame extraction when the user
         // is going to generate notes from slide PDFs anyway — the per-frame
-        // vision descriptions would never get read.
+        // vision descriptions would never get read. When the user picked
+        // "Video screenshots" we also bypass the camera/screen auto-
+        // classifier so camera-style recordings still produce images.
         const c = [python, paths.pipeline_worker, '--course', cid, '--path', outDir];
         if (force) c.push('--force');
-        if (imgSrc === 'slides') c.push('--skip-frames');
+        if (imgSrc === 'slides')      c.push('--skip-frames');
+        else if (imgSrc === 'frames') c.push('--force-screen');
         chain.push(['Transcribe + Align', c]);
       }
       if (steps.includes('generate')) {
