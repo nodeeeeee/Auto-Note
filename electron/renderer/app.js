@@ -19,6 +19,8 @@ const State = {
     courseName: '',
     lecFilter:  '',
     language:   'en',
+    imageSource: 'frames',
+    backend:    '',
     stealth:    false,
     force:      false,
     steps: { mat: true, vid: true, trans: true, align: true, gen: true },
@@ -616,6 +618,23 @@ function buildPipeline() {
             </select>
           </div>
         </div>
+        <div class="row" style="gap:8px;margin-top:8px">
+          <div class="field" style="flex:1">
+            <label class="label">Image source</label>
+            <select id="pp-image-source" class="select-ctrl">
+              <option value="frames"${ps.imageSource === 'frames' ? ' selected' : ''}>Video screenshots (frames)</option>
+              <option value="slides"${ps.imageSource === 'slides' ? ' selected' : ''}>Slide PDFs</option>
+            </select>
+          </div>
+          <div class="field" style="flex:1">
+            <label class="label">Backend</label>
+            <select id="pp-backend" class="select-ctrl">
+              <option value=""${!ps.backend ? ' selected' : ''}>Default (NOTE_MODEL)</option>
+              <option value="codex-cli"${ps.backend === 'codex-cli' ? ' selected' : ''}>Codex CLI</option>
+              <option value="claude-cli"${ps.backend === 'claude-cli' ? ' selected' : ''}>Claude CLI</option>
+            </select>
+          </div>
+        </div>
         <div class="row center" style="gap:8px;margin-top:8px">
           <span class="slider-value" id="pp-detail-val">${esc(ps.detail)}</span>
           <div class="col expand">
@@ -898,6 +917,24 @@ function buildGenerate() {
             <div style="font-size:10px;color:var(--c-white-35);margin-top:2px">
               0-2 Outline · 3-5 Bullets · 6-8 Paragraphs · 9-10 Exhaustive
             </div>
+          </div>
+        </div>
+        <hr class="divider">
+        <div class="row" style="gap:8px;margin-top:4px">
+          <div class="field" style="flex:1">
+            <label class="label">Image source</label>
+            <select id="gen-image-source" class="select-ctrl">
+              <option value="frames" selected>Video screenshots (frames)</option>
+              <option value="slides">Slide PDFs</option>
+            </select>
+          </div>
+          <div class="field" style="flex:1">
+            <label class="label">Backend</label>
+            <select id="gen-backend" class="select-ctrl">
+              <option value="" selected>Default (NOTE_MODEL)</option>
+              <option value="codex-cli">Codex CLI (codex login)</option>
+              <option value="claude-cli">Claude CLI (claude login)</option>
+            </select>
           </div>
         </div>
         <hr class="divider">
@@ -1434,6 +1471,12 @@ async function attachPageHandlers() {
     document.getElementById('pp-language')?.addEventListener('change', e => {
       State.pipeline.language = e.target.value;
     });
+    document.getElementById('pp-image-source')?.addEventListener('change', e => {
+      State.pipeline.imageSource = e.target.value;
+    });
+    document.getElementById('pp-backend')?.addEventListener('change', e => {
+      State.pipeline.backend = e.target.value;
+    });
     document.getElementById('pp-stealth')?.addEventListener('change', e => {
       State.pipeline.stealth = e.target.checked;
     });
@@ -1479,6 +1522,8 @@ async function attachPageHandlers() {
       const name    = document.getElementById('pp-course-name')?.value.trim() || '';
       const detail  = document.getElementById('pp-detail')?.value || '7';
       const lang    = document.getElementById('pp-language')?.value || 'en';
+      const imgSrc  = document.getElementById('pp-image-source')?.value || 'frames';
+      const backend = document.getElementById('pp-backend')?.value || '';
       const lf      = document.getElementById('pp-lec-filter')?.value.trim() || '';
       const steps = [
         ['dl_mat',   document.getElementById('pp-step-mat')?.checked],
@@ -1506,17 +1551,18 @@ async function attachPageHandlers() {
       if (steps.includes('transcribe') || steps.includes('align')) {
         // Pipelined: transcribe → extract frames → align per video
         // Uses threading so transcription of video N+1 overlaps with
-        // frame extraction of video N.
+        // frame extraction of video N. Skip frame extraction when the user
+        // is going to generate notes from slide PDFs anyway — the per-frame
+        // vision descriptions would never get read.
         const c = [python, paths.pipeline_worker, '--course', cid, '--path', outDir];
         if (force) c.push('--force');
-        if (!steps.includes('transcribe')) {
-          // User only selected align — still need to run pipeline worker
-          // (it skips already-transcribed videos)
-        }
+        if (imgSrc === 'slides') c.push('--skip-frames');
         chain.push(['Transcribe + Align', c]);
       }
       if (steps.includes('generate')) {
         const c = [python, paths.generate, '--course', cid, '--course-name', name || courseNameFromId(cid), '--detail', detail, '--language', lang, '--per-video'];
+        if (imgSrc && imgSrc !== 'frames') c.push('--image-source', imgSrc);
+        if (backend) c.push('--model', backend);
         if (lf) c.push('--lectures', lf);
         if (force) c.push('--force');
         chain.push(['Generate notes', c]);
@@ -1745,7 +1791,12 @@ async function attachPageHandlers() {
       const iter    = document.getElementById('gen-iterate')?.checked;
       const lecNum  = document.getElementById('gen-lec-select')?.value;   // '' = all
 
+      const imgSrc  = document.getElementById('gen-image-source')?.value || 'frames';
+      const backend = document.getElementById('gen-backend')?.value || '';
+
       const cmd = [python, paths.generate, '--course', cid, '--course-name', name, '--detail', detail, '--language', lang];
+      if (imgSrc && imgSrc !== 'frames') cmd.push('--image-source', imgSrc);
+      if (backend) cmd.push('--model', backend);
       if (lecNum) cmd.push('--lectures', lecNum);
       if (force)  cmd.push('--force');
       if (merge)  cmd.push('--merge-only');
