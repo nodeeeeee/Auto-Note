@@ -2079,9 +2079,11 @@ async function enterMainApp() {
   const result = await window.api.fetchCourses().catch(() => ({ courses: [] }));
   State.courses = result?.courses || [];
 
-  if (State.courses.length === 0) {
-    State.currentPage = 6;
-  }
+  // Always land on the main page (Dashboard, idx 0). When no courses are
+  // loaded — common right after a fresh install — the Dashboard's empty
+  // state already directs the user to Settings with an "Open Settings"
+  // button, which is friendlier than auto-jumping there ourselves.
+  State.currentPage = 0;
 
   buildNav();
   renderPage();
