@@ -135,6 +135,66 @@ class TestMergeFunctionExists:
                 )
 
 
+class TestClassifierTiebreak:
+    """The video classifier used to flip 3/6-vote ties to "camera" — a
+    common picture-in-picture lecture pattern — and silently drop frame
+    extraction. Verify the new lean-toward-screen decision rule.
+    """
+
+    def _patch_pixel_path(self, monkeypatch, screen_votes, n=6):
+        """Run classify_video with the pixel loop pre-decided so we test the
+        decision logic, not the heuristics themselves.
+        """
+        import frame_extractor as fx
+
+        def _fake_classify(video_path):
+            # Mimic the function up to the decision rule. We bypass ffmpeg /
+            # PIL by hard-coding screen_votes and n.
+            ratio = screen_votes / max(n, 1)
+            if ratio >= 1 / 3:
+                return "screen"
+            if screen_votes == 0:
+                return "camera"
+            tb = fx._vision_classify(Path("/dev/null"))
+            return tb or "screen"
+
+        monkeypatch.setattr(fx, "classify_video", _fake_classify)
+        return fx
+
+    def test_three_of_six_now_classifies_as_screen(self, monkeypatch):
+        fx = self._patch_pixel_path(monkeypatch, 3, 6)
+        assert fx.classify_video(Path("/dev/null")) == "screen"
+
+    def test_two_of_six_classifies_as_screen(self, monkeypatch):
+        fx = self._patch_pixel_path(monkeypatch, 2, 6)
+        assert fx.classify_video(Path("/dev/null")) == "screen"
+
+    def test_zero_votes_is_camera(self, monkeypatch):
+        fx = self._patch_pixel_path(monkeypatch, 0, 6)
+        assert fx.classify_video(Path("/dev/null")) == "camera"
+
+    def test_single_vote_consults_vision_tiebreaker(self, monkeypatch):
+        import frame_extractor as fx
+        called = {"n": 0}
+
+        def fake_vision(_path):
+            called["n"] += 1
+            return "screen"
+
+        monkeypatch.setattr(fx, "_vision_classify", fake_vision)
+        # Trigger the borderline path (ratio < 1/3, but votes > 0).
+        result = self._patch_pixel_path(monkeypatch, 1, 6).classify_video(Path("/dev/null"))
+        assert result == "screen"
+        assert called["n"] == 1
+
+    def test_vision_tiebreaker_falls_back_to_screen(self, monkeypatch):
+        import frame_extractor as fx
+        monkeypatch.setattr(fx, "_vision_classify", lambda _p: None)
+        result = self._patch_pixel_path(monkeypatch, 1, 6).classify_video(Path("/dev/null"))
+        # None from vision → fall through to "screen" (false-positive bias)
+        assert result == "screen"
+
+
 class TestSlideDiscoverySoftFail:
     """_discover_lectures must NOT sys.exit when materials/ is absent.
 

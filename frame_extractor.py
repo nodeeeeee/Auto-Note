@@ -302,9 +302,83 @@ def classify_video(video_path: Path) -> str:
         import shutil
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    result = "screen" if screen_votes > len(frame_paths) / 2 else "camera"
-    print(f"  Video classification: {result} ({screen_votes}/{len(frame_paths)} frames voted screen)")
+    # Decision rule, tuned for false-positive tolerance: a wrongly-detected
+    # "screen" video just emits some camera-style frames the vision pass
+    # describes faithfully, while a wrongly-detected "camera" video drops
+    # ALL slide content. So we lean toward "screen":
+    #   - ≥ 1/3 of sampled frames voted screen (e.g. 2/6) → screen
+    #   - 1/6 single screen vote → consult GPT-4o-mini vision tiebreaker
+    #   - 0/6 (no signal at all) → camera
+    n = len(frame_paths)
+    screen_ratio = screen_votes / max(n, 1)
+    if screen_ratio >= 1 / 3:
+        result = "screen"
+    elif screen_votes == 0:
+        result = "camera"
+    else:
+        # Borderline: ask the vision API to look at the first sampled frame
+        # and break the tie. Falls back to "screen" if anything fails — same
+        # bias as above (false-positive screen is cheap).
+        result = _vision_classify(frame_paths[0]) or "screen"
+
+    print(f"  Video classification: {result} "
+          f"({screen_votes}/{n} frames voted screen)")
     return result
+
+
+def _vision_classify(img_path: Path) -> str | None:
+    """Tiebreaker: ask GPT-4o-mini whether the frame is a screen capture.
+
+    Returns "screen", "camera", or None on any failure.
+    """
+    import base64
+    import io
+    import os as _os
+    try:
+        from PIL import Image as PILImage
+        from openai import OpenAI
+    except Exception:
+        return None
+
+    key = _os.environ.get("OPENAI_API_KEY", "")
+    if not key:
+        try:
+            from semantic_alignment import _get_openai_key
+            key = _get_openai_key()
+        except Exception:
+            return None
+    if not key:
+        return None
+
+    try:
+        img = PILImage.open(img_path).convert("RGB")
+        if img.width > 800:
+            ratio = 800 / img.width
+            img = img.resize((800, int(img.height * ratio)), PILImage.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=70)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        client = OpenAI(api_key=key)
+        r = client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=4,
+            messages=[{"role": "user", "content": [
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/jpeg;base64,{b64}", "detail": "low"}},
+                {"type": "text", "text":
+                 "Is this primarily a screen recording (slides, software, IDE, "
+                 "code, browser) or a camera shot of a person/room? Reply with "
+                 "exactly one word: SCREEN or CAMERA."},
+            ]}],
+        )
+        ans = r.choices[0].message.content.strip().upper()
+        if "SCREEN" in ans:
+            return "screen"
+        if "CAMERA" in ans:
+            return "camera"
+    except Exception:
+        return None
+    return None
 
 
 # ── Perceptual hashing for frame deduplication ───────────────────────────────
