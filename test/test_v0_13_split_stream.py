@@ -133,3 +133,29 @@ class TestMergeFunctionExists:
                     tmp_path / "out.mp4",
                     lambda pct: None,
                 )
+
+
+class TestSlideDiscoverySoftFail:
+    """_discover_lectures must NOT sys.exit when materials/ is absent.
+
+    The slide-PDF path is one of two discovery routes (the other is video
+    frames / transcripts). Returning [] lets the caller fall back to a
+    helpful "what to do next" message that mentions both routes, instead
+    of forcing users who only want screenshare-mode notes to download
+    materials they will never use.
+    """
+
+    def test_no_materials_returns_empty_list(self, tmp_path):
+        from note_generation import _discover_lectures
+        course_dir = tmp_path / "course"
+        course_dir.mkdir()
+        # No materials/ subdirectory at all
+        result = _discover_lectures(course_dir)
+        assert result == []
+
+    def test_empty_materials_returns_empty_list(self, tmp_path):
+        from note_generation import _discover_lectures
+        course_dir = tmp_path / "course"
+        (course_dir / "materials").mkdir(parents=True)
+        result = _discover_lectures(course_dir)
+        assert result == []

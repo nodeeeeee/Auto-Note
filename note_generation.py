@@ -1999,9 +1999,12 @@ def _discover_lectures(course_dir: Path) -> list[LectureData]:
 
     mat_dir = course_dir / "materials"
     if not mat_dir.exists():
-        print(f"[error] Materials directory not found: {mat_dir}")
-        print("  Run 'Download materials' first before generating notes.")
-        sys.exit(1)
+        # Soft return — slide discovery is one of two pathways. The other
+        # (video frames / transcripts) is handled by _discover_video_lectures.
+        # Letting the caller decide how to surface "nothing to generate"
+        # avoids forcing users to download slides when they only want to
+        # generate notes from screen-share recordings.
+        return []
     lecture_subdir: Path | None = None
     for name in _LECTURE_SUBDIRS:
         candidate = mat_dir / name
@@ -2271,7 +2274,26 @@ def main() -> None:
                     sel.add(int(part))
             lectures = [l for l in lectures if l.num in sel]
         if not lectures:
-            print(f"No slides found under {course_dir}"); sys.exit(1)
+            captions_dir = course_dir / "captions"
+            mat_dir      = course_dir / "materials"
+            print(f"[error] Nothing to generate notes from under {course_dir}")
+            if not captions_dir.exists() and not mat_dir.exists():
+                print("  Neither captions/ nor materials/ exists. Download "
+                      "videos and transcribe them, or download slide PDFs "
+                      "(or both) and try again.")
+            elif not captions_dir.exists():
+                print("  No transcripts in captions/. Transcribe videos "
+                      "first, or rerun with --image-source slides if you "
+                      "only want to use the slide PDFs.")
+            elif not mat_dir.exists():
+                print("  No slides in materials/. Run with --image-source "
+                      "frames (default) so the screenshare path is used, "
+                      "or download lecture slides and rerun.")
+            else:
+                print("  Both captions/ and materials/ exist but no "
+                      "lecture pairs were discovered. Check filenames + "
+                      "alignment output.")
+            sys.exit(1)
 
         print(f"Found {len(lectures)} lectures:")
         for ld in lectures:
