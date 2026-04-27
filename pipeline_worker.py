@@ -76,7 +76,14 @@ def _run(cmd: list[str], label: str) -> bool:
 
 
 def get_videos(course_id: str, base_dir: Path) -> list[dict]:
-    """Get list of downloaded videos for a course from manifest."""
+    """Get list of downloaded videos for a course from manifest.
+
+    Sorted by stem so the 1-based position matches the lecture numbering
+    used by ``note_generation._discover_video_lectures`` and
+    ``semantic_alignment.process_course`` — both of which sort captions
+    alphabetically. This makes ``--lectures`` filters consistent across
+    transcribe / align / generate stages.
+    """
     if not MANIFEST_FILE.exists():
         return []
     with open(MANIFEST_FILE, encoding="utf-8") as f:
@@ -100,7 +107,30 @@ def get_videos(course_id: str, base_dir: Path) -> list[dict]:
             "stream_tag": entry.get("stream_tag", ""),
             "course_dir": base_dir / course_id,
         })
+    videos.sort(key=lambda v: v["stem"])
     return videos
+
+
+def _parse_lecture_filter(spec: str) -> set[int]:
+    """Parse '1-5' or '1,3,5' or '1-3,7' into a set of 1-based lecture nums.
+    Returns an empty set when spec is empty/blank — caller treats that as
+    'no filter'."""
+    sel: set[int] = set()
+    if not spec:
+        return sel
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            try:
+                a, b = part.split("-", 1)
+                sel.update(range(int(a), int(b) + 1))
+            except ValueError:
+                continue
+        elif part.isdigit():
+            sel.add(int(part))
+    return sel
 
 
 def transcribe_one(video: dict, force: bool) -> bool:
@@ -183,7 +213,8 @@ def align_one(video: dict, force: bool) -> bool:
 
 def pipeline_sequential(videos: list[dict], force: bool,
                         skip_frames: bool = False,
-                        force_screen: bool = False) -> None:
+                        force_screen: bool = False,
+                        lectures: str = "") -> None:
     """Simple sequential pipeline: transcribe → frames → align per video."""
     for i, video in enumerate(videos, 1):
         print(f"\n{'═' * 60}")
@@ -201,12 +232,15 @@ def pipeline_sequential(videos: list[dict], force: bool,
                "--course", course_dir.name]
         if force:
             cmd.append("--force")
+        if lectures:
+            cmd.extend(["--lectures", lectures])
         _run(cmd, "Align all transcripts")
 
 
 def pipeline_threaded(videos: list[dict], force: bool,
                       skip_frames: bool = False,
-                      force_screen: bool = False) -> None:
+                      force_screen: bool = False,
+                      lectures: str = "") -> None:
     """Threaded pipeline: transcribe and frame-extract/align overlap.
 
     Thread 1 (transcriber): transcribes videos one at a time, pushes
@@ -256,6 +290,8 @@ def pipeline_threaded(videos: list[dict], force: bool,
            "--course", course_dir.name]
     if force:
         cmd.append("--force")
+    if lectures:
+        cmd.extend(["--lectures", lectures])
     _run(cmd, "Align all transcripts")
 
     if errors:
@@ -285,6 +321,11 @@ def main() -> None:
                              "screenshots so camera-style recordings still "
                              "produce images instead of falling through to "
                              "missing slide PDFs.")
+    parser.add_argument("--lectures", metavar="N-N or N,N,N", default="",
+                        help="Filter to specific lectures, e.g. '1-5' or "
+                             "'1,3,5'. Numbers are 1-based positions over "
+                             "videos sorted alphabetically by filename — the "
+                             "same numbering note_generation uses.")
     args = parser.parse_args()
 
     base_dir = Path(args.path) if args.path else COURSE_DATA_DIR
@@ -295,14 +336,27 @@ def main() -> None:
         print("Run 'Download videos' first.")
         return
 
+    sel = _parse_lecture_filter(args.lectures)
+    if sel:
+        before = len(videos)
+        videos = [v for i, v in enumerate(videos, start=1) if i in sel]
+        if not videos:
+            print(f"[error] Lecture filter '{args.lectures}' selected no "
+                  f"videos (out of {before} available). Aborting.")
+            return
+        print(f"Lecture filter '{args.lectures}': "
+              f"{len(videos)}/{before} video(s) selected.")
+
     print(f"Found {len(videos)} video(s) for course {args.course}.")
 
     if args.sequential:
         pipeline_sequential(videos, args.force, skip_frames=args.skip_frames,
-                            force_screen=args.force_screen)
+                            force_screen=args.force_screen,
+                            lectures=args.lectures)
     else:
         pipeline_threaded(videos, args.force, skip_frames=args.skip_frames,
-                          force_screen=args.force_screen)
+                          force_screen=args.force_screen,
+                          lectures=args.lectures)
 
     print(f"\n✓ Pipeline complete: {len(videos)} video(s) processed.")
 

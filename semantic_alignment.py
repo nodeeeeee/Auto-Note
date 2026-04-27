@@ -1786,13 +1786,19 @@ def _load_mapping(mapping_path: Path, course_dir: Path) -> dict[str, list[Path]]
 
 def process_course(course_id: int | str, use_jina: bool = False,
                    mapping_path: Path | None = None,
-                   force: bool = False) -> None:
+                   force: bool = False,
+                   lectures: set[int] | None = None) -> None:
     course_dir  = COURSE_DATA_DIR / str(course_id)
     captions_dir = course_dir / "captions"
     print(f"Course dir : {course_dir}", flush=True)
     print(f"Captions   : {captions_dir}", flush=True)
 
     captions = sorted(captions_dir.glob("*.json")) if captions_dir.exists() else []
+    if lectures:
+        before = len(captions)
+        captions = [c for i, c in enumerate(captions, start=1) if i in lectures]
+        print(f"Lecture filter: {len(captions)}/{before} caption(s) selected.",
+              flush=True)
     all_slides = _candidate_slides(course_dir)
     out_dir    = course_dir / "alignment"
 
@@ -2025,7 +2031,27 @@ def main() -> None:
                              "(default: bge-m3, alternatives: jina, google, mpnet)")
     parser.add_argument("--force", action="store_true",
                         help="Re-align all captions even if alignment files already exist")
+    parser.add_argument("--lectures", metavar="N-N or N,N,N", default="",
+                        help="Filter to specific lectures (1-based positions "
+                             "over alphabetically sorted captions), e.g. "
+                             "'1-5' or '1,3,5'.")
     args = parser.parse_args()
+
+    def _parse_lec(spec: str) -> set[int]:
+        out: set[int] = set()
+        for part in (spec or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                try:
+                    a, b = part.split("-", 1)
+                    out.update(range(int(a), int(b) + 1))
+                except ValueError:
+                    continue
+            elif part.isdigit():
+                out.add(int(part))
+        return out
 
     if args.suggest_matches:
         if not args.course:
@@ -2049,8 +2075,9 @@ def main() -> None:
 
     if args.course:
         mapping = Path(args.mapping) if args.mapping else None
+        lec_filter = _parse_lec(args.lectures) or None
         process_course(args.course, use_jina=args.jina, mapping_path=mapping,
-                       force=args.force)
+                       force=args.force, lectures=lec_filter)
         return
 
     if not args.caption or not args.slides:

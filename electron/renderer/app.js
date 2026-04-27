@@ -1140,7 +1140,11 @@ const CONSTANTS_DEF = [
     ['Gemini 2.5 Pro','gemini-2.5-pro'],['Gemini 2.5 Flash','gemini-2.5-flash'],
     ['Gemini 2.5 Flash Lite','gemini-2.5-flash-lite'],['Gemini 2.0 Flash','gemini-2.0-flash'],
     // ── DeepSeek ────────────────────────────────────────────────────────
-    ['DeepSeek V3 (chat)','deepseek-chat'],['DeepSeek R1 (reasoning)','deepseek-reasoner'],
+    // `deepseek-chat` is an alias that DeepSeek points at the current
+    // latest non-reasoning model (V4 as of 2026-04). `deepseek-v4` is the
+    // pinned alias if you want to lock in V4 specifically.
+    ['DeepSeek V4 (chat)','deepseek-chat'],['DeepSeek V4 pinned','deepseek-v4'],
+    ['DeepSeek V3','deepseek-v3'],['DeepSeek R1 (reasoning)','deepseek-reasoner'],
     // ── xAI Grok ────────────────────────────────────────────────────────
     ['Grok 3','grok-3'],['Grok 3 mini','grok-3-mini'],
     // ── Mistral ─────────────────────────────────────────────────────────
@@ -1160,7 +1164,7 @@ const CONSTANTS_DEF = [
     ['Gemini 2.5 Flash','gemini-2.5-flash'],['Gemini 2.5 Flash Lite','gemini-2.5-flash-lite'],
     ['Gemini 2.0 Flash','gemini-2.0-flash'],
     // ── DeepSeek ────────────────────────────────────────────────────────
-    ['DeepSeek V3 (chat)','deepseek-chat'],
+    ['DeepSeek V4 (chat)','deepseek-chat'],['DeepSeek V4 pinned','deepseek-v4'],
     // ── xAI / Mistral ───────────────────────────────────────────────────
     ['Grok 3 mini','grok-3-mini'],['Mistral Small','mistral-small-latest'],
   ]],
@@ -1538,13 +1542,39 @@ async function attachPageHandlers() {
       const paths = await window.api.getScriptsPaths();
       const chain = [];
 
+      // Expand the lecture filter ('1-5' / '1,3,5') into individual numbers
+      // so the downloader can pass them via --download-video N N N. The
+      // numbering convention here follows the post-download alphabetical
+      // sort used by transcribe / align / generate; passing those same
+      // numbers to the downloader assumes Panopto's course_num matches
+      // (it does in the common case when lectures upload chronologically).
+      const lecNums = [];
+      if (lf) {
+        for (const part of lf.split(',')) {
+          const t = part.trim();
+          if (!t) continue;
+          const m = t.match(/^(\d+)\s*-\s*(\d+)$/);
+          if (m) {
+            const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+            if (a > 0 && b >= a) for (let n = a; n <= b; n++) lecNums.push(n);
+          } else if (/^\d+$/.test(t)) {
+            lecNums.push(parseInt(t, 10));
+          }
+        }
+      }
+
       if (steps.includes('dl_mat')) {
         const c = [python, paths.downloader, '--course', cid, '--download-material-all', '--path', outDir];
         if (stealth) c.push('--secretly');
         chain.push(['Download materials', c]);
       }
       if (steps.includes('dl_vid')) {
-        const c = [python, paths.downloader, '--course', cid, '--download-video-all', '--path', outDir];
+        const c = [python, paths.downloader, '--course', cid, '--path', outDir];
+        if (lecNums.length) {
+          c.push('--download-video', ...lecNums.map(String));
+        } else {
+          c.push('--download-video-all');
+        }
         if (stealth) c.push('--secretly');
         chain.push(['Download videos', c]);
       }
@@ -1560,6 +1590,7 @@ async function attachPageHandlers() {
         if (force) c.push('--force');
         if (imgSrc === 'slides')      c.push('--skip-frames');
         else if (imgSrc === 'frames') c.push('--force-screen');
+        if (lf) c.push('--lectures', lf);
         chain.push(['Transcribe + Align', c]);
       }
       if (steps.includes('generate')) {
