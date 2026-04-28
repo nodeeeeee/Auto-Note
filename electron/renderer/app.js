@@ -1140,11 +1140,14 @@ const CONSTANTS_DEF = [
     ['Gemini 2.5 Pro','gemini-2.5-pro'],['Gemini 2.5 Flash','gemini-2.5-flash'],
     ['Gemini 2.5 Flash Lite','gemini-2.5-flash-lite'],['Gemini 2.0 Flash','gemini-2.0-flash'],
     // ── DeepSeek ────────────────────────────────────────────────────────
-    // `deepseek-chat` is an alias that DeepSeek points at the current
-    // latest non-reasoning model (V4 as of 2026-04). `deepseek-v4` is the
-    // pinned alias if you want to lock in V4 specifically.
-    ['DeepSeek V4 (chat)','deepseek-chat'],['DeepSeek V4 pinned','deepseek-v4'],
-    ['DeepSeek V3','deepseek-v3'],['DeepSeek R1 (reasoning)','deepseek-reasoner'],
+    // V4 ships in two sizes — flash (284B/13B active, fast+cheap) and pro
+    // (1.6T/49B active, flagship). Both have a 1M context window and a
+    // 384K max output. The legacy aliases deepseek-chat / deepseek-reasoner
+    // are deprecated on 2026-07-24 and currently point at v4-flash
+    // (non-thinking and thinking modes respectively).
+    ['DeepSeek V4 Pro ★','deepseek-v4-pro'],['DeepSeek V4 Flash','deepseek-v4-flash'],
+    ['DeepSeek chat (legacy alias)','deepseek-chat'],
+    ['DeepSeek reasoner (legacy alias)','deepseek-reasoner'],
     // ── xAI Grok ────────────────────────────────────────────────────────
     ['Grok 3','grok-3'],['Grok 3 mini','grok-3-mini'],
     // ── Mistral ─────────────────────────────────────────────────────────
@@ -1164,7 +1167,7 @@ const CONSTANTS_DEF = [
     ['Gemini 2.5 Flash','gemini-2.5-flash'],['Gemini 2.5 Flash Lite','gemini-2.5-flash-lite'],
     ['Gemini 2.0 Flash','gemini-2.0-flash'],
     // ── DeepSeek ────────────────────────────────────────────────────────
-    ['DeepSeek V4 (chat)','deepseek-chat'],['DeepSeek V4 pinned','deepseek-v4'],
+    ['DeepSeek V4 Flash','deepseek-v4-flash'],['DeepSeek V4 Pro','deepseek-v4-pro'],
     // ── xAI / Mistral ───────────────────────────────────────────────────
     ['Grok 3 mini','grok-3-mini'],['Mistral Small','mistral-small-latest'],
   ]],

@@ -552,11 +552,12 @@ _MODEL_MAX_COMPLETION = {
     "gpt-5.2":         128000,
     "o3":              100000,
     "o4-mini":         100000,
-    # DeepSeek V4 / V3 / R1 share an 8k default output cap on the public API.
-    "deepseek-chat":     8192,
-    "deepseek-v4":       8192,
-    "deepseek-v3":       8192,
-    "deepseek-reasoner": 8192,
+    # DeepSeek V4 (Pro + Flash) share a 384K max-output cap on the public
+    # API; legacy deepseek-chat / deepseek-reasoner alias to v4-flash.
+    "deepseek-v4-pro":   384000,
+    "deepseek-v4-flash": 384000,
+    "deepseek-chat":     384000,
+    "deepseek-reasoner": 384000,
 }
 
 
