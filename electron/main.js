@@ -968,6 +968,109 @@ function rmRecursive(dirPath) {
   fs.rmSync(dirPath, { recursive: true, force: true });
 }
 
+// ── Credential validation ─────────────────────────────────────────────────────
+// Send a tiny authenticated round-trip to each provider's lightest endpoint
+// to confirm the key reaches the API and decodes. We hit list-models routes
+// (`GET /models` or equivalent) wherever possible — they exercise the same
+// auth path as a real completion call but consume zero output tokens, so
+// repeated tests don't cost anything.
+function httpRequest(method, urlStr, headers, body, timeoutMs) {
+  return new Promise((resolve) => {
+    let parsed;
+    try { parsed = new URL(urlStr); } catch (e) {
+      return resolve({ ok: false, status: 0, body: '', error: 'Invalid URL' });
+    }
+    const mod = parsed.protocol === 'https:' ? https : http;
+    const opts = {
+      method,
+      hostname: parsed.hostname,
+      port:     parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path:     parsed.pathname + parsed.search,
+      headers:  headers || {},
+    };
+    const req = mod.request(opts, (res) => {
+      let buf = '';
+      res.on('data', d => { buf += d; });
+      res.on('end', () => resolve({
+        ok: res.statusCode >= 200 && res.statusCode < 300,
+        status: res.statusCode,
+        body: buf,
+      }));
+    });
+    req.on('error', (err) => resolve({ ok: false, status: 0, body: '', error: String(err.message || err) }));
+    req.setTimeout(timeoutMs || 8000, () => {
+      req.destroy();
+      resolve({ ok: false, status: 0, body: '', error: 'Request timed out' });
+    });
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+async function testCredential(provider, key, extra) {
+  if (!key || !String(key).trim()) {
+    return { ok: false, message: 'No key entered' };
+  }
+  key = String(key).trim();
+  let url, headers, method = 'GET', body = null;
+  switch (provider) {
+    case 'canvas': {
+      let baseUrl = (extra && extra.canvasUrl ? String(extra.canvasUrl) :
+                     (loadConfig().CANVAS_URL || '')).trim().replace(/\/$/, '');
+      if (!baseUrl) return { ok: false, message: 'Set Canvas URL first' };
+      if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
+      url = `${baseUrl}/api/v1/users/self`;
+      headers = { 'Authorization': `Bearer ${key}` };
+      break;
+    }
+    case 'openai':
+      url = 'https://api.openai.com/v1/models';
+      headers = { 'Authorization': `Bearer ${key}` };
+      break;
+    case 'anthropic':
+      url = 'https://api.anthropic.com/v1/models?limit=1';
+      headers = { 'x-api-key': key, 'anthropic-version': '2023-06-01' };
+      break;
+    case 'gemini':
+      // Gemini auth-check via OpenAI-compat layer — matches what we use
+      // at runtime in note_generation._make_client.
+      url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=1`;
+      headers = {};
+      break;
+    case 'deepseek':
+      url = 'https://api.deepseek.com/models';
+      headers = { 'Authorization': `Bearer ${key}` };
+      break;
+    case 'grok':
+      url = 'https://api.x.ai/v1/models';
+      headers = { 'Authorization': `Bearer ${key}` };
+      break;
+    case 'mistral':
+      url = 'https://api.mistral.ai/v1/models';
+      headers = { 'Authorization': `Bearer ${key}` };
+      break;
+    default:
+      return { ok: false, message: `Unknown provider: ${provider}` };
+  }
+  const r = await httpRequest(method, url, headers, body, 8000);
+  if (r.ok) return { ok: true, message: 'Key valid' };
+  if (r.error) return { ok: false, message: r.error };
+  if (r.status === 401 || r.status === 403) {
+    return { ok: false, message: `Auth failed (${r.status})` };
+  }
+  if (r.status === 404 && provider === 'canvas') {
+    return { ok: false, message: '404 — check Canvas URL' };
+  }
+  // Surface a tail of the body so DeepSeek's "Insufficient balance" /
+  // OpenAI's "incorrect_api_key" messages reach the user verbatim.
+  let detail = '';
+  try {
+    const j = JSON.parse(r.body || '');
+    detail = (j.error && (j.error.message || j.error)) || j.message || '';
+  } catch { detail = (r.body || '').slice(0, 120); }
+  return { ok: false, message: `HTTP ${r.status}${detail ? ': ' + String(detail).slice(0, 160) : ''}` };
+}
+
 // ── IPC handlers ──────────────────────────────────────────────────────────────
 function registerIpc() {
   ipcMain.handle('config:get',      ()       => loadConfig());
@@ -975,6 +1078,8 @@ function registerIpc() {
 
   ipcMain.handle('credentials:get', ()       => loadCredentials());
   ipcMain.handle('credentials:set', (_, d)   => { saveCredentials(d); return true; });
+  ipcMain.handle('credentials:test', (_, { provider, key, extra }) =>
+    testCredential(provider, key, extra || {}));
 
   ipcMain.handle('courses:fetch',   ()       => fetchCoursesFromCanvas());
 

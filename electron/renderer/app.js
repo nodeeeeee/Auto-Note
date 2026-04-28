@@ -274,17 +274,84 @@ function mkCheckbox(id, label, checked = true) {
   </label>`;
 }
 
-function mkRevealField(id, placeholder, value = '') {
+function mkRevealField(id, placeholder, value = '', provider = '') {
+  // When `provider` is set, render an extra "Test" button that fires a tiny
+  // authenticated round-trip against that provider's API to verify the key
+  // is reachable + valid before the user runs a real pipeline.
+  const testBtn = provider
+    ? `<button class="test-btn" id="${id}-test" data-provider="${provider}"
+         data-target="${id}" title="Test connection">Test</button>`
+    : '';
+  const status = provider
+    ? `<span class="key-status" id="${id}-status"></span>`
+    : '';
   return `<div class="reveal-wrap">
     <input type="password" id="${id}" class="input-text"
       placeholder="${esc(placeholder)}" value="${esc(value)}">
     <button class="reveal-btn" onclick="toggleReveal('${id}')">👁</button>
-  </div>`;
+    ${testBtn}
+  </div>${status}`;
 }
 
 function toggleReveal(id) {
   const el = document.getElementById(id);
   if (el) el.type = el.type === 'password' ? 'text' : 'password';
+}
+
+async function testAllCredentials() {
+  // Fan out one test per non-empty field. Skips fields the user hasn't
+  // filled in — testing an empty Anthropic key when the user only uses
+  // OpenAI would just produce noise.
+  const btn = document.getElementById('test-all-keys-btn');
+  if (btn) btn.disabled = true;
+  const buttons = document.querySelectorAll('.test-btn');
+  const tests = [];
+  for (const b of buttons) {
+    const tid = b.dataset.target;
+    const v = (document.getElementById(tid)?.value || '').trim();
+    if (!v) continue;   // skip empty fields silently
+    tests.push(testCredentialField(b));
+  }
+  await Promise.all(tests);
+  if (btn) btn.disabled = false;
+}
+
+async function testCredentialField(btn) {
+  const provider = btn.dataset.provider;
+  const targetId = btn.dataset.target;
+  const input    = document.getElementById(targetId);
+  const status   = document.getElementById(`${targetId}-status`);
+  if (!input || !status) return;
+  const key = (input.value || '').trim();
+  if (!key) {
+    status.textContent = '— enter a key first';
+    status.className   = 'key-status warn';
+    return;
+  }
+  // Canvas needs the URL too; pull it straight from the form so the user
+  // doesn't have to Save All before testing.
+  const extra = {};
+  if (provider === 'canvas') {
+    extra.canvasUrl = (document.getElementById('cfg-canvas-url')?.value || '').trim();
+  }
+  btn.disabled = true;
+  status.textContent = 'Testing…';
+  status.className   = 'key-status pending';
+  try {
+    const r = await window.api.testCredential(provider, key, extra);
+    if (r.ok) {
+      status.textContent = '✓ ' + r.message;
+      status.className   = 'key-status ok';
+    } else {
+      status.textContent = '✗ ' + r.message;
+      status.className   = 'key-status err';
+    }
+  } catch (e) {
+    status.textContent = '✗ ' + (e.message || e);
+    status.className   = 'key-status err';
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ── Run pipeline command ───────────────────────────────────────────────────────
@@ -1284,27 +1351,41 @@ async function loadSettingsData() {
     keysEl.innerHTML = `
       <div class="row">
         <div class="col expand"><label class="label">Canvas Token</label>
-          ${mkRevealField('cred-canvas', 'Canvas API token', creds.canvas)}</div>
+          ${mkRevealField('cred-canvas', 'Canvas API token', creds.canvas, 'canvas')}</div>
       </div>
       <div class="row">
         <div class="col expand"><label class="label">OpenAI API Key</label>
-          ${mkRevealField('cred-openai', 'sk-…', creds.openai)}</div>
+          ${mkRevealField('cred-openai', 'sk-…', creds.openai, 'openai')}</div>
         <div class="col expand"><label class="label">Anthropic API Key</label>
-          ${mkRevealField('cred-anthropic', 'sk-ant-…', creds.anthropic)}</div>
+          ${mkRevealField('cred-anthropic', 'sk-ant-…', creds.anthropic, 'anthropic')}</div>
       </div>
       <div class="row">
         <div class="col expand"><label class="label">Gemini API Key</label>
-          ${mkRevealField('cred-gemini', 'AIza…', creds.gemini)}</div>
+          ${mkRevealField('cred-gemini', 'AIza…', creds.gemini, 'gemini')}</div>
         <div class="col expand"><label class="label">DeepSeek API Key</label>
-          ${mkRevealField('cred-deepseek', 'sk-…', creds.deepseek)}</div>
+          ${mkRevealField('cred-deepseek', 'sk-…', creds.deepseek, 'deepseek')}</div>
       </div>
       <div class="row">
         <div class="col expand"><label class="label">xAI (Grok) API Key</label>
-          ${mkRevealField('cred-grok', 'xai-…', creds.grok)}</div>
+          ${mkRevealField('cred-grok', 'xai-…', creds.grok, 'grok')}</div>
         <div class="col expand"><label class="label">Mistral API Key</label>
-          ${mkRevealField('cred-mistral', 'key…', creds.mistral)}</div>
+          ${mkRevealField('cred-mistral', 'key…', creds.mistral, 'mistral')}</div>
+      </div>
+      <div class="row">
+        <div class="col expand">
+          <button class="btn-secondary" id="test-all-keys-btn">Test all keys</button>
+          <span class="hint">Each "Test" button sends a single auth-only
+            request to the provider — no completion tokens are billed.</span>
+        </div>
       </div>
     `;
+    // Wire up per-field Test buttons + the bulk "Test all" button. Use
+    // event delegation so dynamically-rendered buttons work.
+    keysEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('.test-btn');
+      if (btn) testCredentialField(btn);
+    });
+    document.getElementById('test-all-keys-btn')?.addEventListener('click', testAllCredentials);
   }
 
   // Venv status
@@ -1390,6 +1471,13 @@ async function saveAllSettings() {
   }
 
   if (btn) btn.disabled = false;
+
+  // Verify each API key the user just saved by firing a tiny auth-only
+  // round-trip per provider. Failures show inline next to the field; we
+  // don't block the save — the user might be deliberately offline.
+  if (typeof testAllCredentials === 'function') {
+    testAllCredentials().catch(() => {});
+  }
 
   if (errors.length) {
     snack('Errors: ' + errors.join('; '), false);

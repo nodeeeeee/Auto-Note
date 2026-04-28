@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('api', {
   // ── Credentials ───────────────────────────────────────────────────────────
   getCredentials: ()     => ipcRenderer.invoke('credentials:get'),
   setCredentials: (data) => ipcRenderer.invoke('credentials:set', data),
+  testCredential: (provider, key, extra) =>
+    ipcRenderer.invoke('credentials:test', { provider, key, extra }),
 
   // ── Courses (Canvas API) ──────────────────────────────────────────────────
   fetchCourses:   ()     => ipcRenderer.invoke('courses:fetch'),

@@ -361,6 +361,35 @@ input, select, textarea { font: inherit; }
 }
 .reveal-btn:hover { color: var(--c-white-88); }
 
+/* When a Test button sits next to the eye, push the eye left so they
+   don't overlap. The Test button is rendered after the reveal button. */
+.reveal-wrap .test-btn ~ * {}  /* placeholder for spec hierarchy */
+.reveal-wrap:has(.test-btn) .reveal-btn { right: 56px; }
+.test-btn {
+  position: absolute; right: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--c-white-20, rgba(255, 255, 255, 0.2));
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--c-white-88, #ddd);
+  font-size: 11px;
+  padding: 2px 8px;
+  transition: background var(--transition);
+}
+.test-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
+.test-btn:disabled { opacity: 0.5; cursor: wait; }
+
+.key-status {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+.key-status.ok      { color: var(--c-success, #6BCB6B); }
+.key-status.err     { color: var(--c-error, #FF6B6B); }
+.key-status.warn    { color: var(--c-warn, #FFB347); }
+.key-status.pending { color: var(--c-white-45, rgba(255,255,255,0.45)); }
+
 .textarea-ctrl {
   resize: vertical;
   min-height: 80px;
