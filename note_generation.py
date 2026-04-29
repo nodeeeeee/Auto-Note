@@ -484,11 +484,32 @@ def _get_client_for(model: str):
     return _client_cache[p]
 
 
+def _pick_translate_model() -> str:
+    """Choose a translator that won't truncate. When the user's NOTE_MODEL
+    has a much bigger output cap than TRANSLATE_MODEL (e.g. deepseek-v4-*
+    has 384K, gpt-5.1 has 128K, gpt-4o only 16K), prefer NOTE_MODEL so
+    long Chinese translations of long English drafts don't get cut off
+    mid-sentence."""
+    if NOTE_MODEL in ("claude-cli", "codex-cli"):
+        return NOTE_MODEL
+    note_cap = _MODEL_MAX_COMPLETION.get(NOTE_MODEL, 0)
+    tr_cap = _MODEL_MAX_COMPLETION.get(TRANSLATE_MODEL, 0)
+    if note_cap and tr_cap and note_cap > tr_cap * 2:
+        return NOTE_MODEL
+    return TRANSLATE_MODEL
+
+
 def _translate(text: str, lang: str) -> str:
     """Translate note text to the target language, preserving all Markdown
     formatting, image references, LaTeX formulas, and code blocks verbatim.
     Only prose text is translated; technical terms keep English with
-    translation in parentheses on first use."""
+    translation in parentheses on first use.
+
+    On detected truncation (finish_reason=length), the text is split at
+    paragraph boundaries and translated chunk-by-chunk; the chunks are
+    concatenated back together. This avoids the silent-truncation bug
+    where a long English draft turned into a short Chinese fragment that
+    ended mid-sentence or mid-image-link."""
     system = (
         f"You are a professional translator for technical study notes. "
         f"Translate English prose into {lang} while keeping ALL technical "
@@ -534,8 +555,52 @@ def _translate(text: str, lang: str) -> str:
         f"时使用同一个 key。\n\n"
         f"---\n\n{text}"
     )
-    _tmodel = NOTE_MODEL if NOTE_MODEL in ("claude-cli", "codex-cli") else TRANSLATE_MODEL
-    return _call(_tmodel, system, prompt, len(text) * 3)
+    _tmodel = _pick_translate_model()
+    # Generous output budget — Chinese translation of English text often
+    # tokenizes 1.5-2x larger than the source on cl100k_base, so naive
+    # len(text)*3 still bumps gpt-4o's 16K cap on chunks past ~5K chars.
+    _trunc: list[bool] = []
+    out = _call(_tmodel, system, prompt, len(text) * 3, _truncated=_trunc)
+    if _trunc and _trunc[0]:
+        # Split at paragraph boundaries and translate chunk-by-chunk to
+        # stay under the per-call output cap. Falls back to keeping the
+        # English source for any chunk that still won't fit, rather than
+        # caching a truncated translation.
+        return _translate_chunked(text, lang)
+    return out
+
+
+def _translate_chunked(text: str, lang: str, max_chunk_chars: int = 3500) -> str:
+    """Recursive paragraph-by-paragraph translation. Joined back with the
+    same separator the splitter used so Markdown structure is preserved."""
+    paragraphs = text.split("\n\n")
+    out_parts: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for p in paragraphs:
+        if cur_len + len(p) + 2 > max_chunk_chars and cur:
+            out_parts.append("\n\n".join(cur))
+            cur = [p]
+            cur_len = len(p)
+        else:
+            cur.append(p)
+            cur_len += len(p) + 2
+    if cur:
+        out_parts.append("\n\n".join(cur))
+
+    translated: list[str] = []
+    for part in out_parts:
+        if not part.strip():
+            translated.append(part)
+            continue
+        try:
+            t = _translate(part, lang)   # depth-limited: chunks are small
+            translated.append(t)
+        except Exception:
+            # Failed to translate this chunk — keep it in English rather
+            # than dropping content silently.
+            translated.append(part)
+    return "\n\n".join(translated)
 
 
 _MODEL_MAX_COMPLETION = {
@@ -1057,7 +1122,15 @@ def generate_section(
             for t in re.findall(r"\b[A-Z][a-zA-Z]{3,}\b|\b[A-Z]{3,}\b", s.text):
                 terms.add(t)
         term_list = ", ".join(sorted(terms)[:30])
-        v_user = _P("verify").format(term_list=term_list, draft=draft[:2500])
+        # The verifier only sees the head of the draft. If the draft is
+        # longer than that window, accepting v_result as the new draft
+        # would silently truncate everything past the window — exactly
+        # the bug that produced the ~2KB section files. Cap the window
+        # and refuse to overwrite drafts the verifier never fully saw.
+        VERIFY_INPUT_CAP = 2500
+        verifier_saw_all = len(draft) <= VERIFY_INPUT_CAP
+        v_user = _P("verify").format(term_list=term_list,
+                                     draft=draft[:VERIFY_INPUT_CAP])
         # Always route the verify/revision pass through VERIFY_MODEL
         # (gpt-4o) — cheap and fast, avoids burning codex quota on a
         # short review call. If OpenAI is unavailable (no key, quota
@@ -1067,7 +1140,13 @@ def generate_section(
         try:
             v_result = _call(_vmodel, "", v_user, 1500)
             if not v_result.strip().upper().startswith("APPROVED"):
-                if len(v_result) > len(draft) * 0.3:
+                if not verifier_saw_all:
+                    # Long draft — refuse to overwrite with a verifier
+                    # revision that only saw the first 2500 chars.
+                    tqdm.write(f"  [warn] Verifier flagged issues but draft "
+                               f"({len(draft)} chars) exceeds verify window — "
+                               f"keeping full draft as-is.")
+                elif len(v_result) > len(draft) * 0.5:
                     draft = v_result
                 else:
                     tqdm.write(f"  [warn] Verifier suspicious response, keeping draft")
