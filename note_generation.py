@@ -547,13 +547,61 @@ def _translate(text: str, lang: str) -> str:
     # len(text)*3 still bumps gpt-4o's 16K cap on chunks past ~5K chars.
     _trunc: list[bool] = []
     out = _call(_tmodel, system, prompt, len(text) * 3, _truncated=_trunc)
-    if _trunc and _trunc[0]:
+    flagged = _trunc and _trunc[0]
+    # Some providers (notably DeepSeek's V4 chat completions) return
+    # finish_reason="stop" even when the output was cut mid-token. Fall
+    # back to a content-shape heuristic — broken UTF-8, mid-word cuts,
+    # unbalanced markdown image links — so those silent truncations
+    # don't end up in the cache.
+    if not flagged and _looks_truncated(out):
+        flagged = True
+    if flagged:
         # Split at paragraph boundaries and translate chunk-by-chunk to
         # stay under the per-call output cap. Falls back to keeping the
         # English source for any chunk that still won't fit, rather than
         # caching a truncated translation.
         return _translate_chunked(text, lang)
     return out
+
+
+_TRUNC_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)\s\n]*\Z")
+_SENTENCE_END_RE = re.compile(
+    r"[.!?。！？]\s*[*_`>]*\s*\Z|[\)\]\*_`>]\s*\Z|[一-鿿][\)\]\*_`>]?\s*\Z"
+    # Permissive: end with western/CJK terminator, closing markdown
+    # punctuation, or any Chinese character (Chinese sentences often
+    # end with the period folded into the last char's metric).
+)
+
+
+def _looks_truncated(text: str) -> bool:
+    """Heuristic truncation detector for cases where the provider returns
+    finish_reason='stop' but the text was actually cut mid-stream.
+
+    Conservative — false positives waste a chunk-translate retry but
+    don't lose data; false negatives cache a broken section, which is
+    what we just shipped a fix for.
+    """
+    if not text:
+        return True
+    s = text.rstrip()
+    if not s:
+        return True
+    # 1. Broken UTF-8 replacement char at the end → certain truncation
+    if s.endswith("�"):
+        return True
+    # 2. Open image-link without closing paren — `![alt](path` cut
+    if _TRUNC_IMAGE_RE.search(s):
+        return True
+    # 3. Ends mid-ASCII-word (alphabetic char, no sentence end nearby)
+    last = s[-1]
+    if last.isascii() and last.isalpha():
+        # Allow technical term endings ONLY if a closing punct sits
+        # within the last few chars. `_SENTENCE_END_RE` matches the
+        # tail with permissive markdown closings; if it doesn't match
+        # AND we end on a bare letter, assume mid-word truncation.
+        if not _SENTENCE_END_RE.search(s[-12:]):
+            return True
+    return False
 
 
 def _translate_chunked(text: str, lang: str, max_chunk_chars: int = 3500) -> str:
@@ -1085,7 +1133,14 @@ def generate_section(
     _trunc_flag: list[bool] = []
     draft = _call(NOTE_MODEL, _P("system"), user, _max_tokens(detail),
                   _truncated=_trunc_flag)
-    was_truncated = _trunc_flag and _trunc_flag[0]
+    was_truncated = bool(_trunc_flag and _trunc_flag[0])
+    # Belt-and-suspenders: when the provider returns finish_reason='stop'
+    # but the content was actually cut (DeepSeek does this), the shape
+    # heuristic catches it.
+    if not was_truncated and _looks_truncated(draft):
+        was_truncated = True
+        tqdm.write(f"     [warn] Draft looks truncated despite stop reason — "
+                   f"flagging for retry")
     tqdm.write(f"     ✓ {len(draft):,} chars  ({_time.monotonic()-_t0:.0f}s)"
                + ("  [TRUNCATED]" if was_truncated else ""))
 

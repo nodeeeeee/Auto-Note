@@ -85,6 +85,48 @@ class TestPickTranslateModel:
         assert ng._pick_translate_model() == "codex-cli"
 
 
+class TestLooksTruncated:
+    """Heuristic detector for the case where the provider returned
+    finish_reason='stop' but the content was actually cut mid-stream.
+    DeepSeek V4 chat completions hit this against real workloads — see
+    /tmp/cs2105_L01_test.log for the in-the-wild example.
+    """
+
+    def test_clean_chinese_ending(self):
+        from note_generation import _looks_truncated
+        # Ends with `。` — proper Chinese sentence end
+        assert _looks_truncated("内容齐全。") is False
+        # Ends with markdown italic close after `。`
+        assert _looks_truncated("内容齐全。*") is False
+        # Western sentence end
+        assert _looks_truncated("All good.") is False
+
+    def test_broken_utf8_at_end(self):
+        from note_generation import _looks_truncated
+        assert _looks_truncated("现代商业产品通常会�") is True
+
+    def test_mid_image_link_cut(self):
+        from note_generation import _looks_truncated
+        assert _looks_truncated("![Frame 67](images") is True
+        assert _looks_truncated("foo bar\n\n![Slide 12](path/to/slide_") is True
+
+    def test_mid_word_cut_ascii(self):
+        from note_generation import _looks_truncated
+        # The exact pathology from CS2105 L01 S04 — ends mid-word "pri"
+        assert _looks_truncated("由 access、regional 和 global ISP 以及 pri") is True
+
+    def test_complete_image_link_with_caption(self):
+        from note_generation import _looks_truncated
+        assert _looks_truncated(
+            "![Slide 47](images/L01/slide_047.png) *(底线：something。)*"
+        ) is False
+
+    def test_empty_string(self):
+        from note_generation import _looks_truncated
+        assert _looks_truncated("") is True
+        assert _looks_truncated("   \n  ") is True
+
+
 class TestVerifierRemoved:
     """The verifier/revision pass was removed in v1.0.5 — modern flagship
     note models rarely make terminology mistakes worth a separate review
