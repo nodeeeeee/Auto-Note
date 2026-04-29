@@ -165,6 +165,12 @@ _JUNK_DESC_RE = re.compile(
     r"cannot (describe|view|generate|provide|access)|"
     r"i'?m sorry|\bsorry\b|"
     r"abstract blue wave|swirling blue|"
+    # TV-style "no signal" screens: when Panopto's screen-capture input
+    # was disconnected at recording time, the OBJECT stream is just the
+    # broadcast color-bar test pattern. These have no lecture content.
+    r"(test (pattern|screen|card)|color bars|colour bars|"
+    r"vertical (stripes|bars) (in (various|standard) colou?rs|of various colou?rs)|"
+    r"(static|broadcast) (screen|signal)|no signal|no input)|"
     r"(humorous|funny|joke) (meme|image|comic|cartoon|scene|depiction|strip|illustration|individuals|panel)|"
     r"(meme|comic) (format|image|strip|panel)|"
     r"xkcd|four-panel comic|meme structure)\b",

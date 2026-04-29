@@ -830,12 +830,20 @@ def _get_stream_url(
         """Return a list of (stream_url, tag) candidates in preference order.
         Caller can try each until one produces a video with an audio track —
         some Panopto recordings store audio only in the DV stream while SS /
-        OBJECT are video-only for screen recordings."""
+        OBJECT are video-only for screen recordings.
+
+        Tag matching is case-insensitive: Panopto returns either upper-case
+        ("OBJECT", "DV") or lower-case ("object", "dv") tags depending on
+        the session's recording setup. A case-sensitive match would fall
+        through to "any stream first" — which is DV (the camera), so the
+        downloaded video would be a lecture-hall camera shot instead of
+        the screen recording.
+        """
         streams = (body.get("Delivery") or {}).get("Streams") or []
         # Preference: SS (screen-share) > OBJECT (screen recording) > DV (camera).
         # We still yield *all* streams so the caller can fall back if the
         # preferred one lacks audio.
-        order = _PREFER_STREAM_ORDER
+        order = tuple(t.upper() for t in _PREFER_STREAM_ORDER)
         out: list[tuple[str, str]] = []
         seen_urls: set[str] = set()
         for tag in order + (None,):
@@ -843,7 +851,8 @@ def _get_stream_url(
                 surl = s.get("StreamUrl", "")
                 if not surl or surl in seen_urls:
                     continue
-                if tag is None or s.get("Tag") == tag:
+                stream_tag = (s.get("Tag", "") or "").upper()
+                if tag is None or stream_tag == tag:
                     seen_urls.add(surl)
                     out.append((surl, s.get("Tag", "unknown")))
         return out
@@ -1201,7 +1210,10 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
     # recording from a split-stream case where the audio is in DV but the
     # screen video is in OBJECT/SS.
     available_tags = [ct for (_, _, ct) in candidates]
-    has_screen_stream = any(t in ("SS", "OBJECT") for t in available_tags)
+    # Tags from Panopto are sometimes lower-case ("object"/"dv"). Normalise
+    # before matching so the "screen-stream-first" preference still fires.
+    has_screen_stream = any((t or "").upper() in ("SS", "OBJECT")
+                            for t in available_tags)
 
     # Classify each candidate as "video-with-audio" or "video-only" up front.
     # Panopto screen recordings often store SS/OBJECT (screen content, no
@@ -1214,9 +1226,10 @@ def download_video(video: dict, manifest: dict, base_dir: Path) -> bool | None:
         tried.append(ct)
         is_m3u8 = "master.m3u8" in cu
         has_audio = (not is_m3u8) or _hls_has_audio(cu)
+        ct_upper = (ct or "").upper()
         # Preferred screen stream (first one we see that is SS/OBJECT) becomes
         # the chosen VIDEO source — regardless of whether it has audio.
-        if video_cand is None and ct in ("SS", "OBJECT"):
+        if video_cand is None and ct_upper in ("SS", "OBJECT"):
             video_cand = (cu, ch, ct, is_m3u8, has_audio)
         # First stream with audio becomes the audio source.
         if audio_cand is None and has_audio:
