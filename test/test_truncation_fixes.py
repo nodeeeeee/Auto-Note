@@ -85,64 +85,22 @@ class TestPickTranslateModel:
         assert ng._pick_translate_model() == "codex-cli"
 
 
-class TestVerifyOverwriteGuard:
-    """The verifier sees only ``draft[:2500]``. When the draft is longer
-    than that, accepting v_result as the new draft truncates everything
-    past the verify window. The new behavior preserves the full draft
-    and only allows the verifier to overwrite when it saw all of it.
+class TestVerifierRemoved:
+    """The verifier/revision pass was removed in v1.0.5 — modern flagship
+    note models rarely make terminology mistakes worth a separate review
+    call, and the limited verify window had been silently truncating
+    long drafts. Make sure no constant or prompt template is left over.
     """
 
-    def test_long_draft_kept_intact_when_verifier_disagrees(self, monkeypatch):
-        # Construct a draft longer than VERIFY_INPUT_CAP=2500. The mock
-        # verifier returns a "revised" version that is shorter — under
-        # the old logic it would replace the draft and silently truncate
-        # the tail. Under the fix, the original draft is kept.
+    def test_constants_gone(self):
         import note_generation as ng
+        assert not hasattr(ng, "VERIFY_NOTES")
+        assert not hasattr(ng, "VERIFY_MODEL")
 
-        long_draft = "Sentence about TCP. " * 200    # ~3800 chars
-        revised = "TCP is a protocol. " * 50          # ~950 chars
+    def test_verify_prompt_not_in_template(self):
+        import note_generation as ng
+        # Both language tables should have lost the "verify" key
+        assert "verify" not in ng._PROMPTS["en"]
+        if "zh" in ng._PROMPTS:
+            assert "verify" not in ng._PROMPTS["zh"]
 
-        captured = {"draft": long_draft}
-
-        def fake_call(model, system, user, max_tokens, _truncated=None):
-            # Verifier path
-            if "Reference glossary" in user or "Reference Glossary" in user:
-                return revised
-            # Translator path (skip — language is en in this test)
-            return captured["draft"]
-
-        # Build the minimal context generate_section needs, then assert
-        # the draft did not collapse to ~revised. Easier: just exercise
-        # the guard logic directly — patch _call and call generate_section
-        # would require a full LectureData mock. Instead, replicate the
-        # post-verify fragment here:
-        VERIFY_INPUT_CAP = 2500
-        draft = long_draft
-        verifier_saw_all = len(draft) <= VERIFY_INPUT_CAP
-        v_result = revised
-
-        if not v_result.strip().upper().startswith("APPROVED"):
-            if not verifier_saw_all:
-                # The fix: refuse to overwrite
-                pass
-            elif len(v_result) > len(draft) * 0.5:
-                draft = v_result
-
-        assert draft == long_draft, (
-            "Long draft must NOT be replaced by a partial verifier revision"
-        )
-
-    def test_short_draft_can_be_replaced_by_verifier(self):
-        # When the verifier saw the entire draft, replacement is safe.
-        VERIFY_INPUT_CAP = 2500
-        draft = "Short draft about UDP." * 5           # ~110 chars
-        v_result = "UDP is a connectionless protocol." * 5  # ~165 chars
-
-        verifier_saw_all = len(draft) <= VERIFY_INPUT_CAP
-        if not v_result.strip().upper().startswith("APPROVED"):
-            if not verifier_saw_all:
-                pass
-            elif len(v_result) > len(draft) * 0.5:
-                draft = v_result
-
-        assert draft == v_result

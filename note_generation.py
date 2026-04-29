@@ -64,9 +64,7 @@ COURSE_DATA_DIR = Path(_out_dir) if _out_dir else Path.home() / "AutoNote"
 DETAIL_LEVEL      = 7
 OUTPUT_FORMAT     = "md"
 NOTE_MODEL        = "gpt-5.1"
-VERIFY_MODEL      = "gpt-4o"
 TRANSLATE_MODEL   = "gpt-4o"   # Chinese/other translation post-pass — gpt-4o is cheap enough
-VERIFY_NOTES      = True
 QUALITY_TARGET    = 8.0
 IMAGE_RENDER_SCALE = 1.5
 NOTE_LANGUAGE     = "en"    # "en" = English | "zh" = Chinese
@@ -155,18 +153,6 @@ Requirements:
   **CRITICAL: Be inclusive — aim to include MOST content-rich images. For each image, write a paragraph about its content then insert the image. NEVER cluster multiple images together consecutively without explanatory text between them.**
   Format: `![Slide N](path) *(caption)*` or `![Frame N](path) *(caption)*`
 - Code examples must be complete and compilable, using the correct language tag (```c, ```cpp, ```python).
-""",
-verify="""\
-Check the following note excerpt for technical terminology consistency with the slides, and for any obvious factual errors.
-
-**Reference glossary (from slides):**
-{term_list}
-
-**Note excerpt:**
-{draft}
-
-If there are no issues, reply APPROVED (this word only).
-If there are terminology or factual errors, return the corrected full note excerpt with no explanation.
 """,
 exam="""\
 Below are the complete lecture notes for {course_name}. Please append a concise exam cheat-sheet section at the end.
@@ -845,14 +831,6 @@ def _clean_artifacts(text: str) -> str:
     cleaned = []
     for line in lines:
         stripped = line.strip()
-        # Remove bare "APPROVED" lines (verifier leak)
-        if stripped == "APPROVED":
-            continue
-        # Remove verify prompt leaks
-        if "reply APPROVED (this word only)" in stripped:
-            continue
-        if "return the corrected full note excerpt" in stripped:
-            continue
         if "terminology or factual errors" in stripped:
             continue
         # Clean section-header artifacts
@@ -1115,44 +1093,6 @@ def generate_section(
         tqdm.write(f"  [warn] Empty or too-short draft for L{lec_num} §{ci} — not caching")
         heading = f"### {lec_num}.{ci} {_chunk_title(chunk)}"
         return f"{heading}\n\n*(Section could not be generated — re-run with force to retry.)*", True
-
-    if VERIFY_NOTES and draft:
-        terms = set()
-        for s in chunk:
-            for t in re.findall(r"\b[A-Z][a-zA-Z]{3,}\b|\b[A-Z]{3,}\b", s.text):
-                terms.add(t)
-        term_list = ", ".join(sorted(terms)[:30])
-        # The verifier only sees the head of the draft. If the draft is
-        # longer than that window, accepting v_result as the new draft
-        # would silently truncate everything past the window — exactly
-        # the bug that produced the ~2KB section files. Cap the window
-        # and refuse to overwrite drafts the verifier never fully saw.
-        VERIFY_INPUT_CAP = 2500
-        verifier_saw_all = len(draft) <= VERIFY_INPUT_CAP
-        v_user = _P("verify").format(term_list=term_list,
-                                     draft=draft[:VERIFY_INPUT_CAP])
-        # Always route the verify/revision pass through VERIFY_MODEL
-        # (gpt-4o) — cheap and fast, avoids burning codex quota on a
-        # short review call. If OpenAI is unavailable (no key, quota
-        # exceeded, network issue), skip verification rather than losing
-        # the generated draft.
-        _vmodel = VERIFY_MODEL
-        try:
-            v_result = _call(_vmodel, "", v_user, 1500)
-            if not v_result.strip().upper().startswith("APPROVED"):
-                if not verifier_saw_all:
-                    # Long draft — refuse to overwrite with a verifier
-                    # revision that only saw the first 2500 chars.
-                    tqdm.write(f"  [warn] Verifier flagged issues but draft "
-                               f"({len(draft)} chars) exceeds verify window — "
-                               f"keeping full draft as-is.")
-                elif len(v_result) > len(draft) * 0.5:
-                    draft = v_result
-                else:
-                    tqdm.write(f"  [warn] Verifier suspicious response, keeping draft")
-        except Exception as _ve:
-            tqdm.write(f"  [warn] Verify pass failed ({type(_ve).__name__}: "
-                       f"{str(_ve)[:120]}) — keeping draft")
 
     # Strip pipeline artifacts that may have leaked into the draft
     draft = _clean_artifacts(draft)

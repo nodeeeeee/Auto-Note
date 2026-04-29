@@ -1712,7 +1712,6 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
                          value=False, active_color=C_PRIMARY)
 
     note_model   = _read_constant("generate", "NOTE_MODEL")
-    verify_model = _read_constant("generate", "VERIFY_MODEL")
     quality      = _read_constant("generate", "QUALITY_TARGET")
 
     def _run(_) -> None:
@@ -1750,8 +1749,7 @@ def build_generate(page: ft.Page, console: OutputConsole) -> ft.Column:
         _card(ft.Row(controls=[
             ft.Icon(ft.Icons.INFO_OUTLINE, color=C_PRIMARY, size=15),
             ft.Text(
-                f"Generator: {note_model}   Verifier: {verify_model}   "
-                f"Quality target: {quality}",
+                f"Generator: {note_model}   Quality target: {quality}",
                 size=12,
                 color=ft.Colors.with_opacity(0.7, ft.Colors.WHITE),
             ),
@@ -2211,22 +2209,6 @@ def build_settings(page: ft.Page,
             ("Claude Sonnet 4.6",    "claude-sonnet-4-6"),
             ("Claude Sonnet 4.5",    "claude-sonnet-4-5"),
             ("Claude Haiku 4.5",     "claude-haiku-4-5-20251001"),
-        ]),
-        ("generate", "VERIFY_MODEL", "Verification LLM", "gpt-4.1-mini", [
-            # OpenAI
-            ("gpt-4.1-mini",         "gpt-4.1-mini"),
-            ("gpt-4.1-nano",         "gpt-4.1-nano"),
-            ("gpt-4.1",              "gpt-4.1"),
-            ("gpt-5.1",              "gpt-5.1"),
-            # Gemini
-            ("Gemini 3.5 Flash",     "gemini-3.5-flash"),
-            ("Gemini 3.0 Flash",     "gemini-3.0-flash"),
-            ("Gemini 2.5 Flash",     "gemini-2.5-flash"),
-            ("Gemini 2.0 Flash",     "gemini-2.0-flash"),
-            # Anthropic
-            ("Claude Haiku 4.5",     "claude-haiku-4-5-20251001"),
-            ("Claude Sonnet 4.5",    "claude-sonnet-4-5"),
-            ("Claude Sonnet 4.6",    "claude-sonnet-4-6"),
         ]),
         ("generate",   "DETAIL_LEVEL",         "Default detail level",    "8",    None),
         ("generate",   "CHAPTER_SIZE",          "Slides per GPT call",     "15",   None),

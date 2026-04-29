@@ -1056,15 +1056,14 @@ async function loadLectureDropdown(cid) {
 }
 
 async function fillGenInfo() {
-  const [noteModel, verifyModel, target] = await Promise.all([
+  const [noteModel, target] = await Promise.all([
     window.api.getConstant('generate', 'NOTE_MODEL'),
-    window.api.getConstant('generate', 'VERIFY_MODEL'),
     window.api.getConstant('generate', 'QUALITY_TARGET'),
   ]);
   const el = document.getElementById('gen-info-card');
   if (el) {
     el.innerHTML = mkCard(`<div class="info-row">${I.info}
-      <span>Generator: <strong>${esc(noteModel)}</strong>   Verifier: <strong>${esc(verifyModel)}</strong>
+      <span>Generator: <strong>${esc(noteModel)}</strong>
         Quality target: <strong>${esc(target)}</strong></span></div>`);
   }
 }
@@ -1222,21 +1221,6 @@ const CONSTANTS_DEF = [
     ['Mistral Small','mistral-small-latest'],['Codestral','codestral-latest'],
     // ── Claude CLI (uses `claude -p`, no API key needed) ────────────────
     ['Claude CLI (local)','claude-cli'],
-  ]],
-  ['generate', 'VERIFY_MODEL', 'Verification LLM', 'gpt-4.1-mini', [
-    // ── OpenAI ──────────────────────────────────────────────────────────
-    ['GPT-4.1 mini ★','gpt-4.1-mini'],['GPT-4.1 nano','gpt-4.1-nano'],
-    ['GPT-4.1','gpt-4.1'],['GPT-5.1','gpt-5.1'],['o4-mini (reasoning)','o4-mini'],
-    // ── Anthropic ───────────────────────────────────────────────────────
-    ['Claude Haiku 4.5','claude-haiku-4-5-20251001'],['Claude Haiku 3.5','claude-3-5-haiku-20241022'],
-    ['Claude Sonnet 4.6','claude-sonnet-4-6'],['Claude Sonnet 3.5','claude-3-5-sonnet-20241022'],
-    // ── Google Gemini ───────────────────────────────────────────────────
-    ['Gemini 2.5 Flash','gemini-2.5-flash'],['Gemini 2.5 Flash Lite','gemini-2.5-flash-lite'],
-    ['Gemini 2.0 Flash','gemini-2.0-flash'],
-    // ── DeepSeek ────────────────────────────────────────────────────────
-    ['DeepSeek V4 Flash','deepseek-v4-flash'],['DeepSeek V4 Pro','deepseek-v4-pro'],
-    // ── xAI / Mistral ───────────────────────────────────────────────────
-    ['Grok 3 mini','grok-3-mini'],['Mistral Small','mistral-small-latest'],
   ]],
   ['generate', 'DETAIL_LEVEL',   'Default detail level',  '8',   null],
   ['generate', 'CHAPTER_SIZE',   'Slides per GPT call',   '15',  null],

@@ -694,7 +694,6 @@ def menu_settings() -> None:
     _const("align",      "OFF_SLIDE_THRESHOLD",  "Min cosine to stay on-slide")
     _const("align",      "PRIOR_SIGMA",          "Temporal prior width (slides)")
     _const("generate",   "NOTE_MODEL",           "LLM for note generation")
-    _const("generate",   "VERIFY_MODEL",         "LLM for verification")
     _const("generate",   "DETAIL_LEVEL",         "Default detail level (0-10)")
     _const("generate",   "CHAPTER_SIZE",         "Slides per GPT call")
     _const("generate",   "QUALITY_TARGET",       "Self-score target for --iterate")
