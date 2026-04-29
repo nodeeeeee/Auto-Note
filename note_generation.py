@@ -888,6 +888,55 @@ def _clean_artifacts(text: str) -> str:
     return "\n".join(cleaned)
 
 
+def _ensure_frames_embedded(
+    draft: str,
+    slides: list,
+    img_map: dict,
+    img_cache: dict,
+    out_dir: Path,
+    source: str,
+) -> str:
+    """Append any frames the LLM forgot to include in its draft.
+
+    The `_build_chunk_prompt` lists every available frame in the prompt
+    under "Available images", but DeepSeek V4 (and some other models)
+    are inconsistent at actually emitting the `![Frame N](path)` markdown
+    even when explicitly asked. This safety net keeps the contract:
+    every extracted frame is given a chance to surface in the final
+    note. The downstream image-filter pass (`filter_images_pass`) still
+    runs and can drop junk frames — we just guarantee they reach that
+    pass instead of being silently dropped by the LLM.
+    """
+    if not img_map:
+        return draft
+    appended: list[str] = []
+    for s in slides:
+        if s.index not in img_map:
+            continue
+        rel = img_map[s.index].relative_to(out_dir)
+        rel_str = str(rel).replace("\\", "/")
+        # Already cited somewhere in the draft? Skip.
+        if rel_str in draft:
+            continue
+        cache_key = f"page_{s.index}"
+        desc = (img_cache.get(cache_key, "") or "").strip()
+        # First sentence of the description as the caption (max 140 chars).
+        caption = desc[:140]
+        for end in ".。！？!?":
+            idx = caption.find(end)
+            if 25 < idx < len(caption):
+                caption = caption[:idx + 1]
+                break
+        if not caption:
+            caption = f"Frame {s.index + 1}" if source == "screenshare" \
+                else f"Slide {s.index + 1}"
+        prefix = "Frame" if source == "screenshare" else "Slide"
+        appended.append(f"![{prefix} {s.index + 1}]({rel_str}) *({caption})*")
+    if not appended:
+        return draft
+    return draft.rstrip() + "\n\n" + "\n\n".join(appended) + "\n"
+
+
 _BAD_LABEL = re.compile(
     r"^\s*(\d+|[A-Z]{2,4}\d{4}[\s\-].*|CS\d+.*|AY\d+.*|\[.*\]|"
     r".*NUS Confidential.*|.*©\s*CS\d+.*|\(c\)\s*CS\d+.*|Page\s+\d+)\s*$",
@@ -1151,6 +1200,17 @@ def generate_section(
 
     # Strip pipeline artifacts that may have leaked into the draft
     draft = _clean_artifacts(draft)
+
+    # Frame-completeness safety net: DeepSeek V4 (and other models under
+    # certain phrasings) is inconsistent at embedding `![Frame N](...)`
+    # markdown even when the prompt asks for it — empirically the LLM
+    # keeps anywhere from 0–100% of the available frames per chunk.
+    # Auto-append any frame in img_map that didn't make it into the draft
+    # so we never silently lose the visual content the user asked us to
+    # extract. The downstream image-filter pass still drops junk frames.
+    draft = _ensure_frames_embedded(
+        draft, chunk, img_map, ld.img_cache, out_dir, ld.source,
+    )
 
     # Translate to target language if not English
     if NOTE_LANGUAGE != "en" and draft:
